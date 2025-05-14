@@ -9,6 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
       packages: write
       id-token: write
 
@@ -48,15 +49,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Get tag version without prefix
+          # Get tag version
           VERSION=${GITHUB_REF#refs/tags/}
 
+          # Validate semantic format
           if [[ ! $VERSION =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$ ]]; then
-            echo "::error::Invalid version format: $VERSION"
+            echo "::error::Versión inválida: $VERSION"
             exit 1
           fi
 
-          # Create action.yml file for use as Composite Action
+          # Create action file
           cat <<EOF > action.yml
           name: 'Feature Branching'
           description: 'Automatic PR merging with feature branching'
@@ -73,21 +75,24 @@ jobs:
               - name: Merge PRs
                 uses: docker://ghcr.io/josedpiambav/feature:$VERSION
           EOF
+          
+          # Configurar GitHub CLI
+          sudo apt-get update && sudo apt-get install -y gh
+          gh auth login --with-token <<< "$GH_TOKEN"
 
-          # Configure Git and commit to main branch
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git
+          git push -u origin release-$VERSION || {
+            echo "::error::Push failed";
+            exit 1;
+          }
 
-          git fetch origin main
-          git checkout -b release-$VERSION origin/main
+          PR_URL=$(gh pr create ... --json url -q .url) || {
+            echo "::error::PR creation failed";
+            exit 1;
+          }
 
-          git add action.yml
-          git commit -m "Update action to $VERSION"
-
-          gh pr create \
-            --base main \
-            --title "Update action to $VERSION" \
-            --body "Automated version update"
-
-          gh pr merge --auto --squash
+          sleep 60  # Ajustar según duración de los workflows
+          gh pr merge $PR_URL --auto --squash --delete-branch || {
+            echo "::warning::Auto-merge failed";
+            gh pr comment $PR_URL --body "Merge automático falló. Requiere intervención manual.";
+            exit 0;
+          }
