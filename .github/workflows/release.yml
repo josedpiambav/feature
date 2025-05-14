@@ -42,7 +42,10 @@ jobs:
 
       - name: Create Action Version
         run: |
-          # Crear archivo action.yml para uso como Composite Action
+          # Get tag version without prefix
+          VERSION=${GITHUB_REF#refs/tags/}
+
+          # Create action.yml file for use as Composite Action
           cat <<EOF > action.yml
           name: 'Feature Branching'
           description: 'Automatic PR merging with feature branching'
@@ -57,12 +60,15 @@ jobs:
             using: composite
             steps:
               - name: Merge PRs
-                uses: docker://ghcr.io/josedpiambav/feature:${{ github.ref_name }}
+                uses: docker://ghcr.io/josedpiambav/feature:$VERSION
           EOF
 
-          # Hacer commit y push del action.yml
+          # Configure Git and commit to main branch
+          git checkout -b temp-release
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add action.yml
-          git commit -m "Add action version ${{ github.ref_name }}"
-          git push
+          git commit -m "Add action version $VERSION"
+          git push origin temp-release:main
+        env:
+          GITHUB_REF: ${{ github.ref }}
