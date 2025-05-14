@@ -8,12 +8,16 @@ jobs:
   publish-action:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
+      id-token: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
       - name: Setup Docker metadata
         id: meta
@@ -41,9 +45,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Create Action Version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Get tag version without prefix
           VERSION=${GITHUB_REF#refs/tags/}
+
+          if [[ ! $VERSION =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
+          fi
 
           # Create action.yml file for use as Composite Action
           cat <<EOF > action.yml
@@ -64,11 +75,19 @@ jobs:
           EOF
 
           # Configure Git and commit to main branch
-          git checkout -b temp-release
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git
+
+          git fetch origin main
+          git checkout -b release-$VERSION origin/main
+
           git add action.yml
-          git commit -m "Add action version $VERSION"
-          git push origin temp-release:main
-        env:
-          GITHUB_REF: ${{ github.ref }}
+          git commit -m "Update action to $VERSION"
+
+          gh pr create \
+            --base main \
+            --title "Update action to $VERSION" \
+            --body "Automated version update"
+
+          gh pr merge --auto --squash
