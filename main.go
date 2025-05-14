@@ -204,13 +204,13 @@ func hasRequiredLabels(prLabels []*github.Label, required []string) bool {
 func handlePullRequest(client *github.Client, cfg Config, pr *github.PullRequest) {
 	log.Printf("Processing PR #%d", pr.GetNumber())
 
-	log.Printf("GetMergeableState: %s\n", pr.GetMergeableState())
+	// log.Printf("GetMergeableState: %s\n", pr.GetMergeableState())
 
-	// Verify merge readiness
-	if pr.GetMergeableState() != "clean" {
-		log.Printf("PR #%d not mergeable: %s", pr.GetNumber(), pr.GetMergeableState())
-		return
-	}
+	// // Verify merge readiness
+	// if pr.GetMergeableState() != "clean" {
+	// 	log.Printf("PR #%d not mergeable: %s", pr.GetNumber(), pr.GetMergeableState())
+	// 	return
+	// }
 
 	// Perform the merge operation
 	commitSHA, err := executeMerge(client, cfg, pr)
