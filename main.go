@@ -20,7 +20,6 @@ type Config struct {
 	Repo           string   // Repository name
 	TrunkBranch    string   // Base branch (typically main/master)
 	TargetBranch   string   // Destination branch for merges
-	MergeStrategy  string   // Merge strategy: merge, squash, or rebase
 	RequiredLabels []string // Required PR labels to trigger merge
 	RefHistoryFile string   // Path to reference history file
 }
@@ -75,8 +74,6 @@ func parseConfig() Config {
 		"Base branch to merge from")
 	flag.StringVar(&cfg.TargetBranch, "target_branch", "",
 		"Destination branch for merges (default: pre-{trunk})")
-	flag.StringVar(&cfg.MergeStrategy, "merge_strategy", "merge",
-		"Merge strategy: merge, squash, rebase")
 	flag.StringVar(&cfg.RefHistoryFile, "ref_history_file",
 		".github/ref-history.json", "Path to merge history file")
 
@@ -223,55 +220,72 @@ func handlePullRequest(client *github.Client, cfg Config, pr *github.PullRequest
 	if err := updateMergeHistory(client, cfg, pr.GetNumber(), commitSHA); err != nil {
 		log.Printf("History update failed: %v", err)
 	}
-
-	// Cleanup feature branch if needed
-	if cfg.MergeStrategy == "squash" || cfg.MergeStrategy == "rebase" {
-		if err := deleteFeatureBranch(client, cfg, pr.GetHead().GetRef()); err != nil {
-			log.Printf("Branch cleanup failed: %v", err)
-		}
-	}
-}
-
-// deleteFeatureBranch removes the feature branch after merge
-func deleteFeatureBranch(client *github.Client, cfg Config, branchName string) error {
-	// GitHub API requires refs in 'heads/' format
-	ref := fmt.Sprintf("heads/%s", branchName)
-	_, err := client.Git.DeleteRef(
-		context.Background(),
-		cfg.Owner,
-		cfg.Repo,
-		ref,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to delete branch %s: %w", branchName, err)
-	}
-	return nil
 }
 
 // executeMerge performs the actual merge operation using specified strategy
 func executeMerge(client *github.Client, cfg Config, pr *github.PullRequest) (string, error) {
-	commitMsg := fmt.Sprintf("Merge PR #%d into %s (%s)",
-		pr.GetNumber(), cfg.TargetBranch, cfg.MergeStrategy)
+	tempBranch := fmt.Sprintf("merge-temp-%d-%d", pr.GetNumber(), time.Now().Unix())
+	baseRef := fmt.Sprintf("refs/heads/%s", cfg.TargetBranch)
 
-	mergeOptions := &github.PullRequestOptions{
-		MergeMethod: cfg.MergeStrategy,
-		CommitTitle: fmt.Sprintf("Merge PR #%d", pr.GetNumber()),
-	}
-
-	result, resp, err := client.PullRequests.Merge(
+	targetRef, _, err := client.Git.GetRef(
 		context.Background(),
 		cfg.Owner,
 		cfg.Repo,
-		pr.GetNumber(),
-		commitMsg,
-		mergeOptions,
+		baseRef,
 	)
-
 	if err != nil {
-		return "", fmt.Errorf("merge API error: %w (status: %d)", err, resp.StatusCode)
+		return "", fmt.Errorf("error obteniendo referencia target: %v", err)
 	}
 
-	return result.GetSHA(), nil
+	_, _, err = client.Git.CreateRef(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		&github.Reference{
+			Ref:    github.String("refs/heads/" + tempBranch),
+			Object: &github.GitObject{SHA: targetRef.Object.SHA},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("error creando branch temporal: %v", err)
+	}
+
+	mergeOpts := &github.RepositoryMergeRequest{
+		Base:          github.String(tempBranch),
+		Head:          github.String(pr.GetHead().GetRef()),
+		CommitMessage: github.String(fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle())),
+	}
+
+	mergeResult, resp, err := client.Repositories.Merge(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		mergeOpts,
+	)
+	if err != nil {
+		client.Git.DeleteRef(context.Background(), cfg.Owner, cfg.Repo, "heads/"+tempBranch)
+		if resp.StatusCode == 409 {
+			return "", fmt.Errorf("conflict detected: %v", err)
+		}
+		return "", fmt.Errorf("merge API error: %v", err)
+	}
+
+	_, _, err = client.Git.UpdateRef(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		&github.Reference{
+			Ref:    github.String(baseRef),
+			Object: &github.GitObject{SHA: mergeResult.SHA},
+		},
+		true,
+	)
+	if err != nil {
+		return "", fmt.Errorf("error updating target branch: %v", err)
+	}
+
+	client.Git.DeleteRef(context.Background(), cfg.Owner, cfg.Repo, "heads/"+tempBranch)
+	return mergeResult.GetSHA(), nil
 }
 
 // updateMergeHistory maintains the reference history file
