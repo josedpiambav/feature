@@ -201,33 +201,67 @@ func hasRequiredLabels(prLabels []*github.Label, required []string) bool {
 func handlePullRequest(client *github.Client, cfg Config, pr *github.PullRequest) {
 	log.Printf("Processing PR #%d", pr.GetNumber())
 
-	// log.Printf("GetMergeableState: %s\n", pr.GetMergeableState())
+	alreadyMerged, err := isAlreadyMerged(client, cfg, pr.GetNumber(), pr.GetHead().GetSHA())
+	if err != nil {
+		log.Printf("Merge check failed for PR #%d: %v", pr.GetNumber(), err)
+		return
+	}
+	if alreadyMerged {
+		log.Printf("PR #%d already merged with current commit, skipping", pr.GetNumber())
+		return
+	}
 
-	// // Verify merge readiness
-	// if pr.GetMergeableState() != "clean" {
-	// 	log.Printf("PR #%d not mergeable: %s", pr.GetNumber(), pr.GetMergeableState())
-	// 	return
-	// }
-
-	// Perform the merge operation
 	commitSHA, err := executeMerge(client, cfg, pr)
 	if err != nil {
 		log.Printf("Merge failed for PR #%d: %v", pr.GetNumber(), err)
 		return
 	}
 
-	// Update merge history
 	if err := updateMergeHistory(client, cfg, pr.GetNumber(), commitSHA); err != nil {
-		log.Printf("History update failed: %v", err)
+		log.Printf("History update failed for PR #%d: %v", pr.GetNumber(), err)
 	}
 }
 
 // executeMerge performs the actual merge operation using specified strategy
 func executeMerge(client *github.Client, cfg Config, pr *github.PullRequest) (string, error) {
-	// Paso 1+2 unificado: Obtener o crear target branch y su referencia
-	targetRef, err := getOrCreateTargetRef(client, cfg)
+	// Verificar si este PR ya fue mergeado con el mismo commit
+	alreadyMerged, err := isAlreadyMerged(client, cfg, pr.GetNumber(), pr.GetHead().GetSHA())
 	if err != nil {
-		return "", fmt.Errorf("target branch preparation failed: %v", err)
+		return "", fmt.Errorf("merge check failed: %v", err)
+	}
+	if alreadyMerged {
+		return "", fmt.Errorf("PR #%d already merged with commit %s", pr.GetNumber(), pr.GetHead().GetSHA())
+	}
+
+	// Paso 1: Eliminar la rama target si existe para evitar el error 422
+	if err := deleteTargetBranchIfExists(client, cfg); err != nil {
+		return "", fmt.Errorf("failed to cleanup target branch: %v", err)
+	}
+
+	// Paso 2: Crear nueva rama desde trunk
+	trunk, _, err := client.Repositories.GetBranch(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		cfg.TrunkBranch,
+		0,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to get trunk branch: %v", err)
+	}
+
+	// Crear nueva referencia
+	newRef, _, err := client.Git.CreateRef(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		&github.Reference{
+			Ref:    github.String("refs/heads/" + cfg.TargetBranch),
+			Object: &github.GitObject{SHA: trunk.Commit.SHA},
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("branch creation failed: %v", err)
 	}
 
 	// Paso 3: Crear commit de merge
@@ -238,7 +272,7 @@ func executeMerge(client *github.Client, cfg Config, pr *github.PullRequest) (st
 		&github.Commit{
 			Message: github.String(fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle())),
 			Parents: []*github.Commit{
-				{SHA: targetRef.Object.SHA},
+				{SHA: newRef.Object.SHA},
 				{SHA: github.String(pr.GetHead().GetSHA())},
 			},
 			Tree: &github.Tree{
@@ -268,52 +302,61 @@ func executeMerge(client *github.Client, cfg Config, pr *github.PullRequest) (st
 	return commit.GetSHA(), nil
 }
 
-func getOrCreateTargetRef(client *github.Client, cfg Config) (*github.Reference, error) {
-	// Intentar obtener la referencia directamente
-	ref, resp, err := client.Git.GetRef(
+// deleteTargetBranchIfExists elimina la rama target si existe
+func deleteTargetBranchIfExists(client *github.Client, cfg Config) error {
+	_, resp, err := client.Git.GetRef(
 		context.Background(),
 		cfg.Owner,
 		cfg.Repo,
 		"heads/"+cfg.TargetBranch,
 	)
 
-	// Caso exitoso (rama existe)
 	if err == nil {
-		return ref, nil
+		// La rama existe, eliminarla
+		_, err := client.Git.DeleteRef(
+			context.Background(),
+			cfg.Owner,
+			cfg.Repo,
+			"heads/"+cfg.TargetBranch,
+		)
+		return err
 	}
 
-	// Si el error no es 404, retornar error
-	if resp == nil || resp.StatusCode != 404 {
-		return nil, fmt.Errorf("branch check error: %v", err)
+	// Si el error es 404 (no existe), no hay problema
+	if resp != nil && resp.StatusCode == 404 {
+		return nil
 	}
 
-	// Crear nueva rama desde trunk
-	trunk, _, err := client.Repositories.GetBranch(
-		context.Background(),
-		cfg.Owner,
-		cfg.Repo,
-		cfg.TrunkBranch,
-		0,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get trunk branch: %v", err)
+	return err
+}
+
+// isAlreadyMerged verifica si este PR ya fue mergeado con el mismo commit
+func isAlreadyMerged(client *github.Client, cfg Config, prNumber int, commitSHA string) (bool, error) {
+	content, _, err := getHistoryContent(client, cfg)
+	if err != nil && !isNotFoundError(err) {
+		return false, err
 	}
 
-	newRef, _, err := client.Git.CreateRef(
-		context.Background(),
-		cfg.Owner,
-		cfg.Repo,
-		&github.Reference{
-			Ref:    github.String("refs/heads/" + cfg.TargetBranch),
-			Object: &github.GitObject{SHA: trunk.Commit.SHA},
-		},
-	)
-	return newRef, err
+	if len(content) == 0 {
+		return false, nil
+	}
+
+	var history RefHistory
+	if err := json.Unmarshal(content, &history); err != nil {
+		return false, fmt.Errorf("history parse error: %w", err)
+	}
+
+	for _, merge := range history.Merges {
+		if merge.PR == prNumber && merge.Commit == commitSHA {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // updateMergeHistory maintains the reference history file
 func updateMergeHistory(client *github.Client, cfg Config, prNumber int, commitSHA string) error {
-	// Get current history content
 	content, sha, err := getHistoryContent(client, cfg)
 	if err != nil && !isNotFoundError(err) {
 		return err
@@ -326,21 +369,29 @@ func updateMergeHistory(client *github.Client, cfg Config, prNumber int, commitS
 		}
 	}
 
-	// Add new merge record
-	history.Merges = append(history.Merges, MergeRecord{
-		PR:        prNumber,
-		Commit:    commitSHA,
-		Target:    cfg.TargetBranch,
-		Timestamp: time.Now().UTC(),
-	})
+	found := false
+	for i, merge := range history.Merges {
+		if merge.PR == prNumber && merge.Commit == commitSHA {
+			history.Merges[i].Timestamp = time.Now().UTC()
+			found = true
+			break
+		}
+	}
 
-	// Serialize updated history
+	if !found {
+		history.Merges = append(history.Merges, MergeRecord{
+			PR:        prNumber,
+			Commit:    commitSHA,
+			Target:    cfg.TargetBranch,
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
 	newContent, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
 		return fmt.Errorf("history serialization error: %w", err)
 	}
 
-	// Commit changes to repository
 	return commitHistoryUpdate(client, cfg, newContent, sha)
 }
 
