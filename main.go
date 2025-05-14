@@ -40,7 +40,10 @@ type RefHistory struct {
 
 func main() {
 	cfg := parseConfig()
+	log.Printf("cfg: %v\n", cfg)
+
 	client := createGitHubClient(cfg)
+	log.Printf("client: %v\n", client)
 
 	// Ensure target branch exists and is up to date
 	if err := createOrUpdateTargetBranch(client, cfg); err != nil {
