@@ -65,19 +65,19 @@ func main() {
 func parseConfig() Config {
 	var cfg Config
 
-	flag.StringVar(&cfg.GithubToken, "github-token", "",
+	flag.StringVar(&cfg.GithubToken, "github_token", "",
 		"GitHub access token with repo permissions")
 	flag.StringVar(&cfg.Owner, "owner", "",
 		"Repository owner (user/organization)")
 	flag.StringVar(&cfg.Repo, "repo", "",
 		"Repository name")
-	flag.StringVar(&cfg.TrunkBranch, "trunk-branch", "main",
+	flag.StringVar(&cfg.TrunkBranch, "trunk_branch", "main",
 		"Base branch to merge from")
-	flag.StringVar(&cfg.TargetBranch, "target-branch", "",
+	flag.StringVar(&cfg.TargetBranch, "target_branch", "",
 		"Destination branch for merges (default: pre-{trunk})")
-	flag.StringVar(&cfg.MergeStrategy, "merge-strategy", "merge",
+	flag.StringVar(&cfg.MergeStrategy, "merge_strategy", "merge",
 		"Merge strategy: merge, squash, rebase")
-	flag.StringVar(&cfg.RefHistoryFile, "ref-history-file",
+	flag.StringVar(&cfg.RefHistoryFile, "ref_history_file",
 		".github/ref-history.json", "Path to merge history file")
 
 	var labels string
