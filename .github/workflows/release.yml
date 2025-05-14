@@ -1,0 +1,68 @@
+name: Release Action
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ghcr.io/josedpiambav/feature
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Login to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Create Action Version
+        run: |
+          # Crear archivo action.yml para uso como Composite Action
+          cat <<EOF > action.yml
+          name: 'Feature Branching'
+          description: 'Automatic PR merging with feature branching'
+          inputs:
+            trunk-branch:
+              description: 'Base branch name'
+              required: true
+            labels:
+              description: 'Comma-separated required labels'
+              required: true
+          runs:
+            using: composite
+            steps:
+              - name: Merge PRs
+                uses: docker://ghcr.io/josedpiambav/feature:${{ github.ref_name }}
+          EOF
+
+          # Hacer commit y push del action.yml
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add action.yml
+          git commit -m "Add action version ${{ github.ref_name }}"
+          git push
