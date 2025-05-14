@@ -76,23 +76,22 @@ jobs:
                 uses: docker://ghcr.io/josedpiambav/feature:$VERSION
           EOF
           
-          # Configurar GitHub CLI
+          # Configuring the Git
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git
+
+          # Installing and configuring GitHub CLI without warnings
           sudo apt-get update && sudo apt-get install -y gh
-          gh auth login --with-token <<< "$GH_TOKEN"
+          echo "$GH_TOKEN" > token.txt
+          gh auth login --with-token < token.txt
+          rm token.txt
+          gh auth setup-git --hostname github.com
 
-          git push -u origin release-$VERSION || {
-            echo "::error::Push failed";
-            exit 1;
-          }
-
-          PR_URL=$(gh pr create ... --json url -q .url) || {
-            echo "::error::PR creation failed";
-            exit 1;
-          }
-
-          sleep 60  # Ajustar según duración de los workflows
-          gh pr merge $PR_URL --auto --squash --delete-branch || {
-            echo "::warning::Auto-merge failed";
-            gh pr comment $PR_URL --body "Merge automático falló. Requiere intervención manual.";
-            exit 0;
-          }
+          # Synchronize changes with the main and tag branch
+          COMMIT_SHA=$(git rev-parse HEAD)
+          git add action.yml
+          git commit --amend --no-edit
+          git push origin HEAD:main --force
+          git tag -f $VERSION $COMMIT_SHA
+          git push origin $VERSION --force
