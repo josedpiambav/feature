@@ -224,68 +224,91 @@ func handlePullRequest(client *github.Client, cfg Config, pr *github.PullRequest
 
 // executeMerge performs the actual merge operation using specified strategy
 func executeMerge(client *github.Client, cfg Config, pr *github.PullRequest) (string, error) {
-	tempBranch := fmt.Sprintf("merge-temp-%d-%d", pr.GetNumber(), time.Now().Unix())
-	baseRef := fmt.Sprintf("refs/heads/%s", cfg.TargetBranch)
-
-	targetRef, _, err := client.Git.GetRef(
-		context.Background(),
-		cfg.Owner,
-		cfg.Repo,
-		baseRef,
-	)
+	// Paso 1+2 unificado: Obtener o crear target branch y su referencia
+	targetRef, err := getOrCreateTargetRef(client, cfg)
 	if err != nil {
-		return "", fmt.Errorf("error obteniendo referencia target: %v", err)
+		return "", fmt.Errorf("target branch preparation failed: %v", err)
 	}
 
-	_, _, err = client.Git.CreateRef(
+	// Paso 3: Crear commit de merge
+	commit, _, err := client.Git.CreateCommit(
 		context.Background(),
 		cfg.Owner,
 		cfg.Repo,
-		&github.Reference{
-			Ref:    github.String("refs/heads/" + tempBranch),
-			Object: &github.GitObject{SHA: targetRef.Object.SHA},
+		&github.Commit{
+			Message: github.String(fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle())),
+			Parents: []*github.Commit{
+				{SHA: targetRef.Object.SHA},
+				{SHA: github.String(pr.GetHead().GetSHA())},
+			},
+			Tree: &github.Tree{
+				SHA: github.String(pr.GetHead().GetSHA()),
+			},
 		},
+		nil,
 	)
 	if err != nil {
-		return "", fmt.Errorf("error creando branch temporal: %v", err)
+		return "", fmt.Errorf("merge commit creation failed: %v", err)
 	}
 
-	mergeOpts := &github.RepositoryMergeRequest{
-		Base:          github.String(tempBranch),
-		Head:          github.String(pr.GetHead().GetRef()),
-		CommitMessage: github.String(fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle())),
-	}
-
-	mergeResult, resp, err := client.Repositories.Merge(
-		context.Background(),
-		cfg.Owner,
-		cfg.Repo,
-		mergeOpts,
-	)
-	if err != nil {
-		client.Git.DeleteRef(context.Background(), cfg.Owner, cfg.Repo, "heads/"+tempBranch)
-		if resp.StatusCode == 409 {
-			return "", fmt.Errorf("conflict detected: %v", err)
-		}
-		return "", fmt.Errorf("merge API error: %v", err)
-	}
-
-	_, _, err = client.Git.UpdateRef(
+	// Paso 4: Actualizar referencia
+	if _, _, err := client.Git.UpdateRef(
 		context.Background(),
 		cfg.Owner,
 		cfg.Repo,
 		&github.Reference{
-			Ref:    github.String(baseRef),
-			Object: &github.GitObject{SHA: mergeResult.SHA},
+			Ref:    github.String("refs/heads/" + cfg.TargetBranch),
+			Object: &github.GitObject{SHA: commit.SHA},
 		},
 		true,
-	)
-	if err != nil {
-		return "", fmt.Errorf("error updating target branch: %v", err)
+	); err != nil {
+		return "", fmt.Errorf("branch update failed: %v", err)
 	}
 
-	client.Git.DeleteRef(context.Background(), cfg.Owner, cfg.Repo, "heads/"+tempBranch)
-	return mergeResult.GetSHA(), nil
+	return commit.GetSHA(), nil
+}
+
+func getOrCreateTargetRef(client *github.Client, cfg Config) (*github.Reference, error) {
+	// Intentar obtener la referencia directamente
+	ref, resp, err := client.Git.GetRef(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		"heads/"+cfg.TargetBranch,
+	)
+
+	// Caso exitoso (rama existe)
+	if err == nil {
+		return ref, nil
+	}
+
+	// Si el error no es 404, retornar error
+	if resp == nil || resp.StatusCode != 404 {
+		return nil, fmt.Errorf("branch check error: %v", err)
+	}
+
+	// Crear nueva rama desde trunk
+	trunk, _, err := client.Repositories.GetBranch(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		cfg.TrunkBranch,
+		0,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get trunk branch: %v", err)
+	}
+
+	newRef, _, err := client.Git.CreateRef(
+		context.Background(),
+		cfg.Owner,
+		cfg.Repo,
+		&github.Reference{
+			Ref:    github.String("refs/heads/" + cfg.TargetBranch),
+			Object: &github.GitObject{SHA: trunk.Commit.SHA},
+		},
+	)
+	return newRef, err
 }
 
 // updateMergeHistory maintains the reference history file
