@@ -3,6 +3,8 @@ WORKDIR /app
 COPY . .
 RUN CGO_ENABLED=0 go build -o /feature-branching
 
-FROM gcr.io/distroless/static-debian12
-COPY --from=builder /feature-branching /
-ENTRYPOINT ["/feature-branching"]
+FROM alpine:latest
+COPY --from=builder /feature-branching /usr/local/bin/
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
