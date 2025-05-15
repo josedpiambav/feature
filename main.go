@@ -41,7 +41,11 @@ type MergeRecord struct {
 func main() {
 	ctx := context.Background()
 
-	cfg := parseConfig()
+	cfg, err := parseConfig()
+	if err != nil {
+		log.Fatal("Error:", err)
+	}
+
 	client := createGitHubClient(ctx, cfg)
 
 	prs, err := fetchQualifiedPRs(ctx, client, cfg)
@@ -55,7 +59,7 @@ func main() {
 
 	var mergedPRs []MergeRecord
 	for _, pr := range prs {
-		if err := processPR(pr, cfg); err != nil {
+		if err := processPR(pr); err != nil {
 			log.Printf("Error processing PR #%d: %v", pr.GetNumber(), err)
 			continue
 		}
@@ -76,34 +80,54 @@ func main() {
 }
 
 // parseConfig initializes configuration from command line flags
-func parseConfig() Config {
+func parseConfig() (Config, error) {
 	var cfg Config
-
-	flag.StringVar(&cfg.GithubToken, "github_token", "",
-		"GitHub access token with repo permissions")
-	flag.StringVar(&cfg.Owner, "owner", "",
-		"Repository owner (user/organization)")
-	flag.StringVar(&cfg.Repo, "repo", "",
-		"Repository name")
-	flag.StringVar(&cfg.TrunkBranch, "trunk_branch", "main",
-		"Base branch to merge from")
-	flag.StringVar(&cfg.TargetBranch, "target_branch", "",
-		"Destination branch for merges (default: pre-{trunk})")
-
 	var labels string
-	flag.StringVar(&labels, "labels", "",
-		"Comma-separated list of required PR labels")
+
+	flag.StringVar(&cfg.GithubToken, "github_token", "", "GitHub access token")
+	flag.StringVar(&cfg.Owner, "owner", "", "Repository owner")
+	flag.StringVar(&cfg.Repo, "repo", "", "Repository name")
+	flag.StringVar(&cfg.TrunkBranch, "trunk_branch", "main", "Base branch")
+	flag.StringVar(&cfg.TargetBranch, "target_branch", "", "Target branch")
+	flag.StringVar(&labels, "labels", "", "Required PR labels")
 	flag.Parse()
 
-	// Set default target branch if not provided
+	if cfg.GithubToken == "" {
+		return cfg, fmt.Errorf("github_token es requerido")
+	}
+
+	if cfg.Owner == "" {
+		return cfg, fmt.Errorf("owner es requerido")
+	}
+
+	if cfg.Repo == "" {
+		return cfg, fmt.Errorf("repo es requerido")
+	}
+
 	if cfg.TargetBranch == "" {
 		cfg.TargetBranch = fmt.Sprintf("pre-%s", cfg.TrunkBranch)
 	}
 
-	// Split comma-separated labels
-	cfg.RequiredLabels = strings.Split(labels, ",")
+	cfg.RequiredLabels = parseLabels(labels)
 
-	return cfg
+	return cfg, nil
+}
+
+func parseLabels(input string) []string {
+	if input == "" {
+		return nil
+	}
+
+	labels := strings.Split(input, ",")
+	cleaned := make([]string, 0, len(labels))
+
+	for _, l := range labels {
+		if trimmed := strings.TrimSpace(l); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+
+	return cleaned
 }
 
 // createGitHubClient initializes authenticated GitHub client
@@ -164,7 +188,7 @@ func recreateTargetBranch(cfg Config) error {
 	return nil
 }
 
-func processPR(pr *github.PullRequest, cfg Config) error {
+func processPR(pr *github.PullRequest) error {
 	// Fetch PR como branch temporal
 	if err := exec.Command("git", "fetch", "origin",
 		fmt.Sprintf("pull/%d/head:pr-%d", pr.GetNumber(), pr.GetNumber())).Run(); err != nil {

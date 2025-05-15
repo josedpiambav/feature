@@ -1,4 +1,4 @@
-name: Release Action
+name: Release
 
 on:
   release:
@@ -45,7 +45,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Create Action Version
+      - name: Create action version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
