@@ -154,25 +154,28 @@ func fetchQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) (
 
 	var filtered []*github.PullRequest
 	for _, pr := range prs {
-		if hasAllLabels(pr.Labels, cfg.RequiredLabels) && isBranchExists(pr.GetHead().GetRef()) {
+		if hasAnyLabel(pr.Labels, cfg.RequiredLabels) && isBranchExists(pr.GetHead().GetRef()) {
 			filtered = append(filtered, pr)
 		}
 	}
 	return filtered, nil
 }
 
-func hasAllLabels(prLabels []*github.Label, required []string) bool {
-	labelSet := make(map[string]struct{})
+func hasAnyLabel(prLabels []*github.Label, required []string) bool {
+	// Crear set de labels del PR en minúsculas
+	prLabelsSet := make(map[string]struct{})
 	for _, l := range prLabels {
-		labelSet[strings.ToLower(l.GetName())] = struct{}{}
+		prLabelsSet[strings.ToLower(l.GetName())] = struct{}{}
 	}
 
-	for _, req := range required {
-		if _, exists := labelSet[strings.ToLower(req)]; !exists {
-			return false
+	// Verificar si ALGUNA label requerida existe en el PR
+	for _, reqLabel := range required {
+		if _, exists := prLabelsSet[strings.ToLower(reqLabel)]; exists {
+			return true
 		}
 	}
-	return true
+
+	return false
 }
 
 func isBranchExists(branch string) bool {
