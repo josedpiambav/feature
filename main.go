@@ -64,18 +64,19 @@ func main() {
 	var mergedPRs []MergeRecord
 	for _, pr := range prs {
 		if err := processPR(pr); err != nil {
-			log.Printf("Error processing PR #%d: %v", pr.GetNumber(), err)
+			log.Printf("Error procesando PR #%d: %v", pr.GetNumber(), err)
 			continue
 		}
+
 		mergedPRs = append(mergedPRs, MergeRecord{
 			PR:        pr.GetNumber(),
-			Commit:    pr.GetHead().GetSHA(),
+			Commit:    getLatestCommitSHA(),
 			Timestamp: time.Now().UTC(),
 		})
 	}
 
 	if err := updateRefHistory(mergedPRs); err != nil {
-		log.Fatal("Error updating ref history:", err)
+		log.Fatal("Error actualizando historial:", err)
 	}
 
 	if err := pushChanges(cfg); err != nil {
@@ -200,45 +201,58 @@ func recreateTargetBranch(cfg Config) error {
 }
 
 func processPR(pr *github.PullRequest) error {
-	// Fetch PR como branch temporal
+	// Fetch del PR
 	if err := exec.Command("git", "fetch", "origin",
 		fmt.Sprintf("pull/%d/head:pr-%d", pr.GetNumber(), pr.GetNumber())).Run(); err != nil {
-		return err
+		return fmt.Errorf("fetch failed: %v", err)
 	}
 
-	// Merge explícito con --no-ff
-	cmd := exec.Command("git", "merge",
-		fmt.Sprintf("pr-%d", pr.GetNumber()),
-		"--no-ff",
-		"-m",
-		fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle()))
+	// Squash merge
+	mergeCmd := exec.Command("git", "merge",
+		"--squash",
+		fmt.Sprintf("pr-%d", pr.GetNumber()))
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("merge failed: %v", err)
+	if output, err := mergeCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("squash merge failed: %s\n%s", err, output)
+	}
+
+	// Crear commit único
+	commitCmd := exec.Command("git", "commit",
+		"-m", fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle()))
+
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("commit failed: %s\n%s", err, output)
 	}
 
 	return nil
 }
 
-func updateRefHistory(merges []MergeRecord) error {
-	history := RefHistory{Merges: merges}
+func updateRefHistory(processedPRs []MergeRecord) error {
+	history := RefHistory{Merges: processedPRs}
+
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("error marshaling history: %v", err)
 	}
 
 	if err := os.WriteFile(refHistoryFile, data, 0644); err != nil {
-		return err
+		return fmt.Errorf("error writing history file: %v", err)
 	}
 
-	cmd := exec.Command("git", "add", refHistoryFile)
-	if err := cmd.Run(); err != nil {
-		return err
+	// Stage y commit del archivo
+	if err := exec.Command("git", "add", refHistoryFile).Run(); err != nil {
+		return fmt.Errorf("error staging history file: %v", err)
 	}
 
-	return exec.Command("git", "commit", "-m", "chore: update ref history").Run()
+	return exec.Command("git", "commit", "-m", "chore: update ref-history").Run()
 }
 
 func pushChanges(cfg Config) error {
 	return exec.Command("git", "push", "origin", cfg.TargetBranch, "--force").Run()
+}
+
+func getLatestCommitSHA() string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	sha, _ := cmd.Output()
+	return strings.TrimSpace(string(sha))
 }
