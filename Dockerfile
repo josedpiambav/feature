@@ -9,9 +9,4 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /feature-branching
 FROM alpine:latest
 RUN apk add --no-cache git
 COPY --from=builder /feature-branching /usr/local/bin/
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY entrypoint.sh /entrypoint.sh
-
-RUN chmod +x /entrypoint.sh
-
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/feature-branching"]
