@@ -163,18 +163,23 @@ func fetchQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) (
 
 func hasAnyLabel(prLabels []*github.Label, required []string) bool {
 	// Crear set de labels del PR en minúsculas
-	prLabelsSet := make(map[string]struct{})
+	prLabelsNormalized := make([]string, 0, len(prLabels))
 	for _, l := range prLabels {
-		prLabelsSet[strings.ToLower(l.GetName())] = struct{}{}
+		prLabelsNormalized = append(prLabelsNormalized,
+			strings.ToLower(strings.TrimSpace(l.GetName())))
 	}
 
-	log.Printf("prLabelsSet: %+v\n", prLabelsSet)
+	log.Printf("prLabelsNormalized: %+v\n", prLabelsNormalized)
 	log.Printf("required: %+v\n", required)
 
 	// Verificar si ALGUNA label requerida existe en el PR
-	for _, reqLabel := range required {
-		if _, exists := prLabelsSet[strings.ToLower(reqLabel)]; exists {
-			return true
+	for _, req := range required {
+		reqNormalized := strings.ToLower(strings.TrimSpace(req))
+		for _, prLabel := range prLabelsNormalized {
+			if prLabel == reqNormalized {
+				log.Printf("Match encontrado: PR Label '%s' == Required '%s'", prLabel, reqNormalized)
+				return true
+			}
 		}
 	}
 
