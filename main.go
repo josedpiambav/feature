@@ -213,11 +213,7 @@ func processPR(pr *github.PullRequest) error {
 	// Crear commit único
 	commitCmd := exec.Command("git", "commit",
 		"-m",
-		fmt.Sprintf(
-			"%s (%s)",
-			pr.GetTitle(),
-			pr.GetHTMLURL(),
-		),
+		pr.GetTitle(),
 	)
 
 	if output, err := commitCmd.CombinedOutput(); err != nil {
