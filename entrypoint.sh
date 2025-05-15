@@ -2,8 +2,9 @@
 set -e
 
 git config --global --add safe.directory /github/workspace
-git config --global user.name "Feature Branching Bot"
-git config --global user.email "actions@github.com"
+git config --global user.name "GitHub Actions"
+git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git config --global advice.addIgnoredFile false
 
 /usr/local/bin/feature-branching \
   --github_token "${INPUT_GITHUB_TOKEN}" \
