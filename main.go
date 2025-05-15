@@ -195,28 +195,30 @@ func recreateTargetBranch(cfg Config) error {
 }
 
 func processPR(pr *github.PullRequest) error {
-	// 1. Fetch a rama temporal
-	branch := fmt.Sprintf("pr-%d", pr.GetNumber())
-	fetchCmd := exec.Command("git", "fetch", "origin",
-		fmt.Sprintf("pull/%d/head:%s", pr.GetNumber(), branch))
-
-	if output, err := fetchCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("fetch error: %s\n%s", err, output)
+	// Fetch del PR
+	if err := exec.Command("git", "fetch", "origin",
+		fmt.Sprintf("pull/%d/head:pr-%d", pr.GetNumber(), pr.GetNumber())).Run(); err != nil {
+		return fmt.Errorf("fetch failed: %v", err)
 	}
 
-	// 2. Merge usando la rama temporal
+	// Squash merge
 	mergeCmd := exec.Command("git", "merge",
-		"--no-ff",
-		"-m",
-		fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle()),
-		"FETCH_HEAD")
+		"--squash",
+		fmt.Sprintf("pr-%d", pr.GetNumber()))
 
 	if output, err := mergeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("merge error: %s\n%s", err, output)
+		return fmt.Errorf("squash merge failed: %s\n%s", err, output)
 	}
 
-	// 3. Limpieza opcional
-	exec.Command("git", "branch", "-D", branch).Run()
+	// Crear commit único
+	commitCmd := exec.Command("git", "commit",
+		"-m",
+		fmt.Sprintf("(%d[%s]) %s", pr.GetNumber(), pr.GetHTMLURL(), pr.GetTitle()),
+	)
+
+	if output, err := commitCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("commit failed: %s\n%s", err, output)
+	}
 
 	return nil
 }
