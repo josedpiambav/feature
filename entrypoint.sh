@@ -1,10 +1,14 @@
 #!/bin/sh
 set -e
 
+git config --global --add safe.directory /github/workspace
+git config --global user.name "Feature Branching Bot"
+git config --global user.email "actions@github.com"
+
 /usr/local/bin/feature-branching \
   --github_token "${INPUT_GITHUB_TOKEN}" \
-  --owner "${INPUT_OWNER}" \
-  --repo "${INPUT_REPO}" \
-  --trunk_branch "${INPUT_TRUNK_BRANCH}" \
-  --target_branch "${INPUT_TARGET_BRANCH}" \
-  --labels "${INPUT_LABELS}"
+  ${INPUT_OWNER:+--owner "${INPUT_OWNER}"} \
+  ${INPUT_REPO:+--repo "${INPUT_REPO}"} \
+  ${INPUT_TRUNK_BRANCH:+--trunk_branch "${INPUT_TRUNK_BRANCH}"} \
+  ${INPUT_TARGET_BRANCH:+--target_branch "${INPUT_TARGET_BRANCH}"} \
+  ${INPUT_LABELS:+--labels "${INPUT_LABELS}"}
