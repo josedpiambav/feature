@@ -168,6 +168,9 @@ func hasAnyLabel(prLabels []*github.Label, required []string) bool {
 		prLabelsSet[strings.ToLower(l.GetName())] = struct{}{}
 	}
 
+	log.Printf("prLabelsSet: %+v\n", prLabelsSet)
+	log.Printf("required: %+v\n", required)
+
 	// Verificar si ALGUNA label requerida existe en el PR
 	for _, reqLabel := range required {
 		if _, exists := prLabelsSet[strings.ToLower(reqLabel)]; exists {
