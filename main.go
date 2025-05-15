@@ -55,8 +55,6 @@ func main() {
 		log.Fatal("Error fetching PRs:", err)
 	}
 
-	log.Printf("prs filtered: %+v\n", prs)
-
 	if err := recreateTargetBranch(cfg); err != nil {
 		log.Fatal("Error preparing target branch:", err)
 	}
@@ -151,7 +149,6 @@ func fetchQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) (
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("prs: %+v\n", prs)
 
 	var filtered []*github.PullRequest
 	for _, pr := range prs {
@@ -169,9 +166,6 @@ func hasAnyLabel(prLabels []*github.Label, required []string) bool {
 		prLabelsNormalized = append(prLabelsNormalized,
 			strings.ToLower(strings.TrimSpace(l.GetName())))
 	}
-
-	log.Printf("prLabelsNormalized: %+v\n", prLabelsNormalized)
-	log.Printf("required: %+v\n", required)
 
 	// Verificar si ALGUNA label requerida existe en el PR
 	for _, req := range required {
@@ -201,21 +195,22 @@ func recreateTargetBranch(cfg Config) error {
 }
 
 func processPR(pr *github.PullRequest) error {
-	// Fetch del PR
-	if err := exec.Command("git", "fetch", "origin",
-		fmt.Sprintf("pull/%d/head:pr-%d", pr.GetNumber(), pr.GetNumber())).Run(); err != nil {
-		return fmt.Errorf("fetch failed: %v", err)
+	fetchCmd := exec.Command("git", "fetch", "origin",
+		fmt.Sprintf("pull/%d/head", pr.GetNumber()))
+
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("fetch error: %s\n%s", err, output)
 	}
 
-	// Merge clásico estilo GitHub (--no-ff)
-	cmd := exec.Command("git", "merge",
+	// 2. Merge usando FETCH_HEAD
+	mergeCmd := exec.Command("git", "merge",
 		"--no-ff",
 		"-m",
 		fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle()),
-	)
+		"FETCH_HEAD")
 
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("merge failed: %s\n%s", err, output)
+	if output, err := mergeCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("merge error: %s\n%s", err, output)
 	}
 
 	return nil
