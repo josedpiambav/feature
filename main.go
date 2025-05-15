@@ -209,7 +209,7 @@ func processPR(pr *github.PullRequest) error {
 		"--no-ff",
 		"-m",
 		fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle()),
-		branch)
+		"FETCH_HEAD")
 
 	if output, err := mergeCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("merge error: %s\n%s", err, output)

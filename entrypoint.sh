@@ -2,7 +2,7 @@
 set -e
 
 git config --global --add safe.directory /github/workspace
-git config --global user.name "GitHub Actions"
+git config --global user.name "github-actions[bot]"
 git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git config --global advice.addIgnoredFile false
 
