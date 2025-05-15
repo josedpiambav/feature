@@ -248,10 +248,7 @@ func updateRefHistory(processedPRs []MergeRecord) error {
 }
 
 func pushChanges(cfg Config) error {
-	return exec.Command("git", "push", "origin", cfg.TargetBranch,
-		"--force",
-		"--no-recurse-submodules",
-		"-o", "ci.skip").Run()
+	return exec.Command("git", "push", "origin", cfg.TargetBranch, "--force").Run()
 }
 
 func getLatestCommitSHA() string {
