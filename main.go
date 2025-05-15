@@ -46,12 +46,16 @@ func main() {
 		log.Fatal("Error:", err)
 	}
 
+	log.Printf("cfg: %+v\n", cfg)
+
 	client := createGitHubClient(ctx, cfg)
 
 	prs, err := fetchQualifiedPRs(ctx, client, cfg)
 	if err != nil {
 		log.Fatal("Error fetching PRs:", err)
 	}
+
+	log.Printf("prs filtered: %+v\n", prs)
 
 	if err := recreateTargetBranch(cfg); err != nil {
 		log.Fatal("Error preparing target branch:", err)
@@ -146,6 +150,7 @@ func fetchQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) (
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("prs: %+v\n", prs)
 
 	var filtered []*github.PullRequest
 	for _, pr := range prs {
