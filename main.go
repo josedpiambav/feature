@@ -43,6 +43,8 @@ func main() {
 		log.Fatal("Error:", err)
 	}
 
+	log.Printf("cfg: %+v\n", cfg)
+
 	client := createGitHubClient(ctx, cfg)
 
 	if err := ensureTargetBranch(ctx, client, cfg); err != nil {
@@ -53,6 +55,8 @@ func main() {
 	if err != nil {
 		log.Fatal("PR fetch error:", err)
 	}
+
+	log.Printf("prs: %+v\n", prs)
 
 	var mergedPRs []MergeRecord
 	for _, pr := range prs {
@@ -134,14 +138,16 @@ func ensureTargetBranch(ctx context.Context, client *github.Client, cfg Config) 
 }
 
 func getQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) ([]*github.PullRequest, error) {
-	prs, _, err := client.PullRequests.List(ctx, cfg.Owner, cfg.Repo, &github.PullRequestListOptions{
+	prs, resp, err := client.PullRequests.List(ctx, cfg.Owner, cfg.Repo, &github.PullRequestListOptions{
 		State: "open",
 		Base:  cfg.TrunkBranch,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("error listing PRs: %v", err)
+		return nil, fmt.Errorf("API error: %v, Status: %d", err, resp.StatusCode)
 	}
-
+	if prs == nil {
+		return []*github.PullRequest{}, nil // Retornar slice vacío en lugar de nil
+	}
 	return filterPRs(prs, cfg.RequiredLabels), nil
 }
 
@@ -171,66 +177,83 @@ func hasAnyLabel(prLabels []*github.Label, required []string) bool {
 }
 
 func processPR(ctx context.Context, client *github.Client, cfg Config, pr *github.PullRequest) (string, error) {
-	// Obtener el último commit de la rama target
-	baseRepoCommit, _, err := client.Repositories.GetCommit(ctx, cfg.Owner, cfg.Repo, cfg.TargetBranch, nil)
+	// Obtener el commit base con validación
+	baseRepoCommit, resp, err := client.Repositories.GetCommit(ctx, cfg.Owner, cfg.Repo, cfg.TargetBranch, nil)
 	if err != nil {
-		return "", fmt.Errorf("error getting base commit: %v", err)
+		if resp.StatusCode == 404 {
+			// Crear branch si no existe
+			if err := createTargetBranch(ctx, client, cfg); err != nil {
+				return "", err
+			}
+			baseRepoCommit, _, err = client.Repositories.GetCommit(ctx, cfg.Owner, cfg.Repo, cfg.TargetBranch, nil)
+			if err != nil {
+				return "", fmt.Errorf("error getting base commit after creation: %v", err)
+			}
+		} else {
+			return "", fmt.Errorf("error getting base commit: %v", err)
+		}
 	}
 
-	if baseRepoCommit.Commit == nil {
-		return "", fmt.Errorf("base commit is nil")
+	// Validar estructura del commit
+	if baseRepoCommit == nil || baseRepoCommit.Commit == nil || baseRepoCommit.Commit.SHA == nil {
+		return "", fmt.Errorf("invalid base commit structure")
 	}
-	baseCommit := baseRepoCommit.Commit
 
+	// Obtener commits del PR
 	prCommits, _, err := client.PullRequests.ListCommits(ctx, cfg.Owner, cfg.Repo, pr.GetNumber(), nil)
-	if err != nil {
+	if err != nil || len(prCommits) == 0 {
 		return "", fmt.Errorf("error getting PR commits: %v", err)
 	}
 
-	// Crear tree entries
+	// Crear árbol combinado
 	var treeEntries []*github.TreeEntry
 	for _, prCommit := range prCommits {
-		commit, _, err := client.Git.GetCommit(ctx, cfg.Owner, cfg.Repo, prCommit.GetSHA())
-		if err != nil {
-			return "", fmt.Errorf("error getting commit details: %v", err)
+		if prCommit.SHA == nil {
+			continue // Saltar commits inválidos
+		}
+
+		commit, _, err := client.Git.GetCommit(ctx, cfg.Owner, cfg.Repo, *prCommit.SHA)
+		if err != nil || commit == nil || commit.Tree == nil {
+			continue // Manejar errores adecuadamente
 		}
 
 		treeEntries = append(treeEntries, &github.TreeEntry{
-			Path:    github.String(fmt.Sprintf("pr-%d/%s", pr.GetNumber(), prCommit.GetSHA())),
-			Mode:    github.String("100644"),
-			Type:    github.String("blob"),
-			Content: github.String("Squashed changes"),
-			SHA:     commit.Tree.SHA,
+			Path: github.String(fmt.Sprintf("pr-%d/%s", pr.GetNumber(), *prCommit.SHA)),
+			Mode: github.String("100644"),
+			Type: github.String("blob"),
+			SHA:  commit.Tree.SHA,
 		})
 	}
 
+	// Crear nuevo árbol
 	tree, _, err := client.Git.CreateTree(
 		ctx,
 		cfg.Owner,
 		cfg.Repo,
-		*baseCommit.SHA,
+		*baseRepoCommit.Commit.SHA,
 		treeEntries,
 	)
-	if err != nil {
+	if err != nil || tree == nil {
 		return "", fmt.Errorf("error creating tree: %v", err)
 	}
 
-	// Crear commit con los padres correctos
+	// Crear nuevo commit
 	newCommit, _, err := client.Git.CreateCommit(
 		ctx,
 		cfg.Owner,
 		cfg.Repo,
 		&github.Commit{
-			Message: github.String(pr.GetTitle()),
+			Message: github.String(fmt.Sprintf("PR-%d: %s [squash]", pr.GetNumber(), pr.GetTitle())),
 			Tree:    tree,
-			Parents: []*github.Commit{baseCommit}, // Ahora usando el tipo correcto
+			Parents: []*github.Commit{baseRepoCommit.Commit},
 		},
 		nil,
 	)
-	if err != nil {
+	if err != nil || newCommit == nil {
 		return "", fmt.Errorf("error creating commit: %v", err)
 	}
 
+	// Actualizar referencia
 	_, _, err = client.Git.UpdateRef(
 		ctx,
 		cfg.Owner,
@@ -242,7 +265,26 @@ func processPR(ctx context.Context, client *github.Client, cfg Config, pr *githu
 		true,
 	)
 
-	return newCommit.GetSHA(), err
+	if err != nil {
+		return "", fmt.Errorf("error updating ref: %v", err)
+	}
+
+	return *newCommit.SHA, nil
+}
+
+func createTargetBranch(ctx context.Context, client *github.Client, cfg Config) error {
+	// Obtener referencia de trunk
+	trunkBranch, _, err := client.Repositories.GetBranch(ctx, cfg.Owner, cfg.Repo, cfg.TrunkBranch, 0)
+	if err != nil || trunkBranch == nil || trunkBranch.Commit == nil {
+		return fmt.Errorf("error getting trunk branch: %v", err)
+	}
+
+	// Crear target branch
+	_, _, err = client.Git.CreateRef(ctx, cfg.Owner, cfg.Repo, &github.Reference{
+		Ref:    github.String("refs/heads/" + cfg.TargetBranch),
+		Object: &github.GitObject{SHA: trunkBranch.Commit.SHA},
+	})
+	return err
 }
 
 func updateRefHistory(ctx context.Context, client *github.Client, cfg Config, records []MergeRecord) error {
