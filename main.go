@@ -6,8 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -20,12 +18,12 @@ const (
 )
 
 type Config struct {
-	GithubToken    string   // GitHub access token with repo permissions
-	Owner          string   // Repository owner (user or organization)
-	Repo           string   // Repository name
-	TrunkBranch    string   // Base branch (typically main/master)
-	TargetBranch   string   // Destination branch for merges
-	RequiredLabels []string // Required PR labels to trigger merge
+	GithubToken    string
+	Owner          string
+	Repo           string
+	TrunkBranch    string
+	TargetBranch   string
+	RequiredLabels []string
 }
 
 type RefHistory struct {
@@ -40,49 +38,42 @@ type MergeRecord struct {
 
 func main() {
 	ctx := context.Background()
-
 	cfg, err := parseConfig()
 	if err != nil {
 		log.Fatal("Error:", err)
 	}
 
-	log.Printf("cfg: %+v\n", cfg)
-
 	client := createGitHubClient(ctx, cfg)
 
-	prs, err := fetchQualifiedPRs(ctx, client, cfg)
-	if err != nil {
-		log.Fatal("Error fetching PRs:", err)
+	if err := ensureTargetBranch(ctx, client, cfg); err != nil {
+		log.Fatal("Branch setup error:", err)
 	}
 
-	if err := recreateTargetBranch(cfg); err != nil {
-		log.Fatal("Error preparing target branch:", err)
+	prs, err := getQualifiedPRs(ctx, client, cfg)
+	if err != nil {
+		log.Fatal("PR fetch error:", err)
 	}
 
 	var mergedPRs []MergeRecord
 	for _, pr := range prs {
-		if err := processPR(pr); err != nil {
-			log.Printf("Error procesando PR #%d: %v", pr.GetNumber(), err)
+		commitSHA, err := processPR(ctx, client, cfg, pr)
+		if err != nil {
+			log.Printf("Error processing PR #%d: %v", pr.GetNumber(), err)
 			continue
 		}
 
 		mergedPRs = append(mergedPRs, MergeRecord{
 			PR:        pr.GetNumber(),
-			Commit:    getLatestCommitSHA(),
+			Commit:    commitSHA,
 			Timestamp: time.Now().UTC(),
 		})
 	}
 
-	if err := updateRefHistory(mergedPRs); err != nil {
-		log.Fatal("Error actualizando historial:", err)
-	}
-
-	if err := pushChanges(cfg); err != nil {
-		log.Fatal("Error pushing changes:", err)
+	if err := updateRefHistory(ctx, client, cfg, mergedPRs); err != nil {
+		log.Fatal("History update error:", err)
 	}
 }
 
-// parseConfig initializes configuration from command line flags
 func parseConfig() (Config, error) {
 	var cfg Config
 	var labels string
@@ -96,15 +87,11 @@ func parseConfig() (Config, error) {
 	flag.Parse()
 
 	if cfg.GithubToken == "" {
-		return cfg, fmt.Errorf("github_token es requerido")
+		return cfg, fmt.Errorf("github_token is required")
 	}
 
-	if cfg.Owner == "" {
-		return cfg, fmt.Errorf("owner es requerido")
-	}
-
-	if cfg.Repo == "" {
-		return cfg, fmt.Errorf("repo es requerido")
+	if cfg.Owner == "" || cfg.Repo == "" {
+		return cfg, fmt.Errorf("owner and repo are required")
 	}
 
 	if cfg.TargetBranch == "" {
@@ -112,7 +99,6 @@ func parseConfig() (Config, error) {
 	}
 
 	cfg.RequiredLabels = parseLabels(labels)
-
 	return cfg, nil
 }
 
@@ -120,20 +106,9 @@ func parseLabels(input string) []string {
 	if input == "" {
 		return nil
 	}
-
-	labels := strings.Split(input, ",")
-	cleaned := make([]string, 0, len(labels))
-
-	for _, l := range labels {
-		if trimmed := strings.TrimSpace(l); trimmed != "" {
-			cleaned = append(cleaned, trimmed)
-		}
-	}
-
-	return cleaned
+	return strings.Split(input, ",")
 }
 
-// createGitHubClient initializes authenticated GitHub client
 func createGitHubClient(ctx context.Context, cfg Config) *github.Client {
 	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: cfg.GithubToken},
@@ -141,114 +116,149 @@ func createGitHubClient(ctx context.Context, cfg Config) *github.Client {
 	return github.NewClient(oauth2.NewClient(ctx, ts))
 }
 
-func fetchQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) ([]*github.PullRequest, error) {
+func ensureTargetBranch(ctx context.Context, client *github.Client, cfg Config) error {
+	_, resp, err := client.Repositories.GetBranch(ctx, cfg.Owner, cfg.Repo, cfg.TargetBranch, 0)
+	if resp.StatusCode == 404 {
+		baseRef, _, err := client.Repositories.GetBranch(ctx, cfg.Owner, cfg.Repo, cfg.TrunkBranch, 0)
+		if err != nil {
+			return fmt.Errorf("error getting base branch: %v", err)
+		}
+
+		_, _, err = client.Git.CreateRef(ctx, cfg.Owner, cfg.Repo, &github.Reference{
+			Ref:    github.String("refs/heads/" + cfg.TargetBranch),
+			Object: &github.GitObject{SHA: baseRef.Commit.SHA},
+		})
+		return err
+	}
+	return err
+}
+
+func getQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) ([]*github.PullRequest, error) {
 	prs, _, err := client.PullRequests.List(ctx, cfg.Owner, cfg.Repo, &github.PullRequestListOptions{
 		State: "open",
 		Base:  cfg.TrunkBranch,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error listing PRs: %v", err)
 	}
 
+	return filterPRs(prs, cfg.RequiredLabels), nil
+}
+
+func filterPRs(prs []*github.PullRequest, requiredLabels []string) []*github.PullRequest {
 	var filtered []*github.PullRequest
 	for _, pr := range prs {
-		if hasAnyLabel(pr.Labels, cfg.RequiredLabels) {
+		if hasAnyLabel(pr.Labels, requiredLabels) {
 			filtered = append(filtered, pr)
 		}
 	}
-	return filtered, nil
+	return filtered
 }
 
 func hasAnyLabel(prLabels []*github.Label, required []string) bool {
-	// Crear set de labels del PR en minúsculas
-	prLabelsNormalized := make([]string, 0, len(prLabels))
-	for _, l := range prLabels {
-		prLabelsNormalized = append(prLabelsNormalized,
-			strings.ToLower(strings.TrimSpace(l.GetName())))
+	requiredSet := make(map[string]struct{})
+	for _, label := range required {
+		requiredSet[strings.ToLower(strings.TrimSpace(label))] = struct{}{}
 	}
 
-	// Verificar si ALGUNA label requerida existe en el PR
-	for _, req := range required {
-		reqNormalized := strings.ToLower(strings.TrimSpace(req))
-		for _, prLabel := range prLabelsNormalized {
-			if prLabel == reqNormalized {
-				log.Printf("Match encontrado: PR Label '%s' == Required '%s'", prLabel, reqNormalized)
-				return true
-			}
+	for _, prLabel := range prLabels {
+		labelName := strings.ToLower(strings.TrimSpace(prLabel.GetName()))
+		if _, exists := requiredSet[labelName]; exists {
+			return true
 		}
 	}
-
 	return false
 }
 
-func recreateTargetBranch(cfg Config) error {
-	if err := exec.Command("git", "checkout", cfg.TrunkBranch).Run(); err != nil {
-		return err
+func processPR(ctx context.Context, client *github.Client, cfg Config, pr *github.PullRequest) (string, error) {
+	// Obtener el último commit de la rama target
+	baseRepoCommit, _, err := client.Repositories.GetCommit(ctx, cfg.Owner, cfg.Repo, cfg.TargetBranch, nil)
+	if err != nil {
+		return "", fmt.Errorf("error getting base commit: %v", err)
 	}
 
-	exec.Command("git", "branch", "-D", cfg.TargetBranch).Run()
-
-	if err := exec.Command("git", "checkout", "-B", cfg.TargetBranch).Run(); err != nil {
-		return err
+	if baseRepoCommit.Commit == nil {
+		return "", fmt.Errorf("base commit is nil")
 	}
-	return nil
-}
+	baseCommit := baseRepoCommit.Commit
 
-func processPR(pr *github.PullRequest) error {
-	// Fetch del PR
-	if err := exec.Command("git", "fetch", "origin",
-		fmt.Sprintf("pull/%d/head:pr-%d", pr.GetNumber(), pr.GetNumber())).Run(); err != nil {
-		return fmt.Errorf("fetch failed: %v", err)
+	prCommits, _, err := client.PullRequests.ListCommits(ctx, cfg.Owner, cfg.Repo, pr.GetNumber(), nil)
+	if err != nil {
+		return "", fmt.Errorf("error getting PR commits: %v", err)
 	}
 
-	// Squash merge
-	mergeCmd := exec.Command("git", "merge",
-		"--squash",
-		fmt.Sprintf("pr-%d", pr.GetNumber()))
+	// Crear tree entries
+	var treeEntries []*github.TreeEntry
+	for _, prCommit := range prCommits {
+		commit, _, err := client.Git.GetCommit(ctx, cfg.Owner, cfg.Repo, prCommit.GetSHA())
+		if err != nil {
+			return "", fmt.Errorf("error getting commit details: %v", err)
+		}
 
-	if output, err := mergeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("squash merge failed: %s\n%s", err, output)
+		treeEntries = append(treeEntries, &github.TreeEntry{
+			Path:    github.String(fmt.Sprintf("pr-%d/%s", pr.GetNumber(), prCommit.GetSHA())),
+			Mode:    github.String("100644"),
+			Type:    github.String("blob"),
+			Content: github.String("Squashed changes"),
+			SHA:     commit.Tree.SHA,
+		})
 	}
 
-	// Crear commit único
-	commitCmd := exec.Command("git", "commit",
-		"-m",
-		pr.GetTitle(),
+	tree, _, err := client.Git.CreateTree(
+		ctx,
+		cfg.Owner,
+		cfg.Repo,
+		*baseCommit.SHA,
+		treeEntries,
+	)
+	if err != nil {
+		return "", fmt.Errorf("error creating tree: %v", err)
+	}
+
+	// Crear commit con los padres correctos
+	newCommit, _, err := client.Git.CreateCommit(
+		ctx,
+		cfg.Owner,
+		cfg.Repo,
+		&github.Commit{
+			Message: github.String(pr.GetTitle()),
+			Tree:    tree,
+			Parents: []*github.Commit{baseCommit}, // Ahora usando el tipo correcto
+		},
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("error creating commit: %v", err)
+	}
+
+	_, _, err = client.Git.UpdateRef(
+		ctx,
+		cfg.Owner,
+		cfg.Repo,
+		&github.Reference{
+			Ref:    github.String("refs/heads/" + cfg.TargetBranch),
+			Object: &github.GitObject{SHA: newCommit.SHA},
+		},
+		true,
 	)
 
-	if output, err := commitCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("commit failed: %s\n%s", err, output)
-	}
-
-	return nil
+	return newCommit.GetSHA(), err
 }
 
-func updateRefHistory(processedPRs []MergeRecord) error {
-	history := RefHistory{Merges: processedPRs}
-
-	data, err := json.MarshalIndent(history, "", "  ")
+func updateRefHistory(ctx context.Context, client *github.Client, cfg Config, records []MergeRecord) error {
+	content, err := json.MarshalIndent(RefHistory{Merges: records}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("error marshaling history: %v", err)
 	}
 
-	if err := os.WriteFile(refHistoryFile, data, 0644); err != nil {
-		return fmt.Errorf("error writing history file: %v", err)
-	}
-
-	// Stage y commit del archivo
-	if err := exec.Command("git", "add", refHistoryFile).Run(); err != nil {
-		return fmt.Errorf("error staging history file: %v", err)
-	}
-
-	return exec.Command("git", "commit", "-m", "chore: update ref-history").Run()
-}
-
-func pushChanges(cfg Config) error {
-	return exec.Command("git", "push", "origin", cfg.TargetBranch, "--force").Run()
-}
-
-func getLatestCommitSHA() string {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	sha, _ := cmd.Output()
-	return strings.TrimSpace(string(sha))
+	_, _, err = client.Repositories.CreateFile(ctx, cfg.Owner, cfg.Repo, refHistoryFile, &github.RepositoryContentFileOptions{
+		Message: github.String("chore: add .ref-history"),
+		Content: content,
+		Branch:  github.String(cfg.TargetBranch),
+		Committer: &github.CommitAuthor{
+			Name:  github.String("GitHub Actions"),
+			Email: github.String("actions@github.com"),
+		},
+	})
+	return err
 }
