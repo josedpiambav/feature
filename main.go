@@ -154,7 +154,7 @@ func fetchQualifiedPRs(ctx context.Context, client *github.Client, cfg Config) (
 
 	var filtered []*github.PullRequest
 	for _, pr := range prs {
-		if hasAnyLabel(pr.Labels, cfg.RequiredLabels) && isBranchExists(pr.GetHead().GetRef()) {
+		if hasAnyLabel(pr.Labels, cfg.RequiredLabels) {
 			filtered = append(filtered, pr)
 		}
 	}
@@ -184,11 +184,6 @@ func hasAnyLabel(prLabels []*github.Label, required []string) bool {
 	}
 
 	return false
-}
-
-func isBranchExists(branch string) bool {
-	cmd := exec.Command("git", "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", branch))
-	return cmd.Run() == nil
 }
 
 func recreateTargetBranch(cfg Config) error {
