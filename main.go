@@ -207,21 +207,15 @@ func processPR(pr *github.PullRequest) error {
 		return fmt.Errorf("fetch failed: %v", err)
 	}
 
-	// Squash merge
-	mergeCmd := exec.Command("git", "merge",
-		"--squash",
-		fmt.Sprintf("pr-%d", pr.GetNumber()))
+	// Merge clásico estilo GitHub (--no-ff)
+	cmd := exec.Command("git", "merge",
+		"--no-ff",
+		"-m",
+		fmt.Sprintf("(#%d) %s", pr.GetNumber(), pr.GetTitle()),
+	)
 
-	if output, err := mergeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("squash merge failed: %s\n%s", err, output)
-	}
-
-	// Crear commit único
-	commitCmd := exec.Command("git", "commit",
-		"-m", fmt.Sprintf("(#%d) %s [actions]", pr.GetNumber(), pr.GetTitle()))
-
-	if output, err := commitCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("commit failed: %s\n%s", err, output)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("merge failed: %s\n%s", err, output)
 	}
 
 	return nil
