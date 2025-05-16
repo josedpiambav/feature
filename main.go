@@ -217,17 +217,33 @@ func hasAnyLabel(prLabels []string, required []string) bool {
 }
 
 func recreateTargetBranch(cfg Config) error {
-	commands := []*exec.Cmd{
-		exec.Command("git", "checkout", cfg.TrunkBranch),
-		exec.Command("git", "branch", "-D", cfg.TargetBranch),
-		exec.Command("git", "checkout", "-B", cfg.TargetBranch),
+	if err := runGitCommand("checkout", cfg.TrunkBranch); err != nil {
+		return fmt.Errorf("error cambiando a trunk branch: %w", err)
 	}
 
-	for _, cmd := range commands {
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("error ejecutando '%s': %s\n%s",
-				strings.Join(cmd.Args, " "), err, output)
+	if branchExists(cfg.TargetBranch) {
+		if err := runGitCommand("branch", "-D", cfg.TargetBranch); err != nil {
+			return fmt.Errorf("error eliminando rama target: %w", err)
 		}
+	}
+
+	if err := runGitCommand("checkout", "-B", cfg.TargetBranch); err != nil {
+		return fmt.Errorf("error creando rama target: %w", err)
+	}
+
+	return nil
+}
+
+func branchExists(branch string) bool {
+	cmd := exec.Command("git", "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", branch))
+	return cmd.Run() == nil
+}
+
+func runGitCommand(args ...string) error {
+	cmd := exec.Command("git", args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("error ejecutando 'git %s': %s\n%s",
+			strings.Join(args, " "), err, string(output))
 	}
 	return nil
 }
