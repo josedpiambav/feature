@@ -12,95 +12,86 @@ import (
 	"time"
 )
 
+// Constants for application configuration
 const (
-	refHistoryFile = ".ref-history"
-	githubAPI      = "https://api.github.com"
-	userAgent      = "GitHubMergeBot/1.0"
+	refHistoryFile = ".ref-history"           // File to track merge history
+	githubAPI      = "https://api.github.com" // GitHub API endpoint
+	userAgent      = "GitHubMergeBot/1.0"     // User agent for API requests
 )
 
+// Config holds application configuration parameters
 type Config struct {
-	GithubToken    string   `json:"github_token"`
-	Owner          string   `json:"owner"`
-	Repo           string   `json:"repo"`
-	TrunkBranch    string   `json:"trunk_branch"`
-	TargetBranch   string   `json:"target_branch"`
-	RequiredLabels []string `json:"required_labels"`
+	GithubToken    string   `json:"github_token"`    // GitHub access token
+	Owner          string   `json:"owner"`           // Repository owner
+	Repo           string   `json:"repo"`            // Repository name
+	TrunkBranch    string   `json:"trunk_branch"`    // Base branch (usually main/master)
+	TargetBranch   string   `json:"target_branch"`   // Target branch for merges
+	RequiredLabels []string `json:"required_labels"` // Required PR labels
 }
 
+// RefHistory tracks merged pull requests
 type RefHistory struct {
-	Merges []MergeRecord `json:"merges"`
+	Merges []MergeRecord `json:"merges"` // List of merge records
 }
 
+// MergeRecord represents a single merged PR
 type MergeRecord struct {
-	PR        int       `json:"pr"`
-	Commit    string    `json:"commit"`
-	Timestamp time.Time `json:"timestamp"`
+	PR        int       `json:"pr"`        // Pull Request number
+	Commit    string    `json:"commit"`    // Resulting commit SHA
+	Timestamp time.Time `json:"timestamp"` // Merge timestamp
 }
 
+// GitHubPR represents a simplified Pull Request structure
 type GitHubPR struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	State  string `json:"state"`
+	Number int    `json:"number"` // PR number
+	Title  string `json:"title"`  // PR title
+	State  string `json:"state"`  // PR state (open/closed)
 	Base   struct {
-		Ref string `json:"ref"`
+		Ref string `json:"ref"` // Base branch reference
 	} `json:"base"`
-	Labels []string `json:"labels"`
+	Labels []string `json:"labels"` // List of PR labels
 }
 
 func main() {
-	cfg, err := parseConfig()
-	if err != nil {
-		log.Fatal("Configuración inválida:", err)
-	}
+	cfg := mustParseConfig()
+	mustSetupGitConfig()
 
-	if err := setupGitConfig(); err != nil {
-		log.Fatal("Error configurando Git:", err)
-	}
+	prs := mustFetchQualifiedPRs(cfg)
+	prepareTargetBranch(cfg)
 
-	prs, err := fetchQualifiedPRs(cfg)
-	if err != nil {
-		log.Fatal("Error obteniendo PRs:", err)
-	}
-
-	if err := recreateTargetBranch(cfg); err != nil {
-		log.Fatal("Error preparando rama destino:", err)
-	}
-
-	var mergedPRs []MergeRecord
-	for _, pr := range prs {
-		if err := processPR(pr); err != nil {
-			log.Printf("PR #%d falló: %v", pr.Number, err)
-			continue
-		}
-
-		mergedPRs = append(mergedPRs, createMergeRecord(pr))
-	}
-
-	if err := updateRefHistory(mergedPRs); err != nil {
-		log.Fatal("Error actualizando historial:", err)
-	}
-
-	if err := pushChanges(cfg); err != nil {
-		log.Fatal("Error subiendo cambios:", err)
-	}
+	mergedPRs := processPRs(prs)
+	updateMergeHistory(mergedPRs)
+	pushChanges(cfg)
 }
 
+// mustParseConfig enforces valid configuration
+func mustParseConfig() Config {
+	cfg, err := parseConfig()
+	if err != nil {
+		log.Fatal("Invalid configuration:", err)
+	}
+	return cfg
+}
+
+// parseConfig initializes configuration from flags
 func parseConfig() (Config, error) {
 	var cfg Config
 	var labels string
 
-	flag.StringVar(&cfg.GithubToken, "github_token", "", "GitHub access token")
-	flag.StringVar(&cfg.Owner, "owner", "", "Repository owner")
-	flag.StringVar(&cfg.Repo, "repo", "", "Repository name")
+	flag.StringVar(&cfg.GithubToken, "github_token", "", "GitHub access token (required)")
+	flag.StringVar(&cfg.Owner, "owner", "", "Repository owner (required)")
+	flag.StringVar(&cfg.Repo, "repo", "", "Repository name (required)")
 	flag.StringVar(&cfg.TrunkBranch, "trunk_branch", "main", "Base branch name")
 	flag.StringVar(&cfg.TargetBranch, "target_branch", "", "Target branch name")
-	flag.StringVar(&labels, "labels", "", "PR labels")
+	flag.StringVar(&labels, "labels", "", "Required PR labels (comma separated)")
 	flag.Parse()
 
-	if cfg.GithubToken == "" || cfg.Owner == "" || cfg.Repo == "" || labels == "" {
-		return cfg, fmt.Errorf("faltan parámetros requeridos")
+	// Validate required parameters
+	if cfg.GithubToken == "" || cfg.Owner == "" || cfg.Repo == "" {
+		return cfg, fmt.Errorf("missing required parameters")
 	}
 
+	// Set default target branch if not provided
 	if cfg.TargetBranch == "" {
 		cfg.TargetBranch = fmt.Sprintf("pre-%s", cfg.TrunkBranch)
 	}
@@ -109,13 +100,22 @@ func parseConfig() (Config, error) {
 	return cfg, nil
 }
 
+// parseLabels converts comma-separated string to slice
 func parseLabels(input string) []string {
 	if input == "" {
-		return nil
+		return make([]string, 0)
 	}
 	return strings.Split(input, ",")
 }
 
+// mustSetupGitConfig configures Git with safe defaults
+func mustSetupGitConfig() {
+	if err := setupGitConfig(); err != nil {
+		log.Fatal("Error configuring Git:", err)
+	}
+}
+
+// setupGitConfig sets global Git configuration
 func setupGitConfig() error {
 	configs := map[string]string{
 		"safe.directory":        "/github/workspace",
@@ -125,23 +125,33 @@ func setupGitConfig() error {
 	}
 
 	for key, value := range configs {
-		cmd := exec.Command("git", "config", "--global", key, value)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git config error: %s\n%s", err, output)
+		if err := runGitCommand("config", "--global", key, value); err != nil {
+			return fmt.Errorf("git config error: %w", err)
 		}
 	}
 	return nil
 }
 
+// mustFetchQualifiedPRs retrieves PRs meeting criteria
+func mustFetchQualifiedPRs(cfg Config) []GitHubPR {
+	prs, err := fetchQualifiedPRs(cfg)
+	if err != nil {
+		log.Fatal("Error fetching PRs:", err)
+	}
+	return prs
+}
+
+// fetchQualifiedPRs retrieves open PRs from GitHub API
 func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open&base=%s",
 		githubAPI, cfg.Owner, cfg.Repo, cfg.TrunkBranch)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("error creando request: %w", err)
+		return nil, fmt.Errorf("request creation failed: %w", err)
 	}
 
+	// Set request headers
 	req.Header.Set("Authorization", "token "+cfg.GithubToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", userAgent)
@@ -149,12 +159,12 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error realizando solicitud: %w", err)
+		return nil, fmt.Errorf("API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API respondió con código %d", resp.StatusCode)
+		return nil, fmt.Errorf("API responded with status %d", resp.StatusCode)
 	}
 
 	var rawPRs []struct {
@@ -170,9 +180,10 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&rawPRs); err != nil {
-		return nil, fmt.Errorf("error decodificando respuesta: %w", err)
+		return nil, fmt.Errorf("response decoding failed: %w", err)
 	}
 
+	// Convert raw PRs to simplified structure
 	prs := make([]GitHubPR, len(rawPRs))
 	for i, raw := range rawPRs {
 		labels := make([]string, len(raw.Labels))
@@ -192,6 +203,7 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	return filterPRs(prs, cfg.RequiredLabels), nil
 }
 
+// filterPRs selects PRs with required labels
 func filterPRs(prs []GitHubPR, requiredLabels []string) []GitHubPR {
 	var filtered []GitHubPR
 	for _, pr := range prs {
@@ -202,7 +214,12 @@ func filterPRs(prs []GitHubPR, requiredLabels []string) []GitHubPR {
 	return filtered
 }
 
+// hasAnyLabel checks for label matches
 func hasAnyLabel(prLabels []string, required []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+
 	prLabelSet := make(map[string]struct{})
 	for _, l := range prLabels {
 		prLabelSet[strings.ToLower(l)] = struct{}{}
@@ -216,113 +233,109 @@ func hasAnyLabel(prLabels []string, required []string) bool {
 	return false
 }
 
-func recreateTargetBranch(cfg Config) error {
-	if err := runGitCommand("checkout", cfg.TrunkBranch); err != nil {
-		return fmt.Errorf("error cambiando a trunk branch: %w", err)
+// prepareTargetBranch resets target branch
+func prepareTargetBranch(cfg Config) {
+	steps := []struct {
+		args []string
+		desc string
+	}{
+		{[]string{"checkout", cfg.TrunkBranch}, "switching to trunk branch"},
+		{[]string{"branch", "-D", cfg.TargetBranch}, "deleting target branch"},
+		{[]string{"checkout", "-B", cfg.TargetBranch}, "creating target branch"},
 	}
 
-	if branchExists(cfg.TargetBranch) {
-		if err := runGitCommand("branch", "-D", cfg.TargetBranch); err != nil {
-			return fmt.Errorf("error eliminando rama target: %w", err)
+	for _, step := range steps {
+		// Skip deletion if branch doesn't exist
+		if step.args[0] == "branch" && !branchExists(cfg.TargetBranch) {
+			continue
+		}
+		if err := runGitCommand(step.args...); err != nil {
+			log.Fatalf("Error %s: %v", step.desc, err)
 		}
 	}
-
-	if err := runGitCommand("checkout", "-B", cfg.TargetBranch); err != nil {
-		return fmt.Errorf("error creando rama target: %w", err)
-	}
-
-	return nil
 }
 
+// branchExists checks if a Git branch exists
 func branchExists(branch string) bool {
-	cmd := exec.Command("git", "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", branch))
-	return cmd.Run() == nil
+	return runGitCommand("show-ref", "--verify", fmt.Sprintf("refs/heads/%s", branch)) == nil
 }
 
+// runGitCommand executes Git commands with unified error handling
 func runGitCommand(args ...string) error {
 	cmd := exec.Command("git", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("error ejecutando 'git %s': %s\n%s",
+		return fmt.Errorf("'git %s' failed: %s\n%s",
 			strings.Join(args, " "), err, string(output))
 	}
 	return nil
 }
 
-func processPR(pr GitHubPR) error {
+// processPRs handles PR merging pipeline
+func processPRs(prs []GitHubPR) []MergeRecord {
+	var mergedPRs []MergeRecord
+	for _, pr := range prs {
+		if err := processSinglePR(pr); err != nil {
+			log.Printf("PR #%d failed: %v", pr.Number, err)
+			continue
+		}
+		mergedPRs = append(mergedPRs, createMergeRecord(pr))
+	}
+	return mergedPRs
+}
+
+// processSinglePR handles individual PR merging
+func processSinglePR(pr GitHubPR) error {
 	branch := fmt.Sprintf("pr-%d", pr.Number)
 
-	if err := fetchPRBranch(pr.Number, branch); err != nil {
-		return err
+	// Execute PR processing steps
+	steps := []struct {
+		args []string
+		desc string
+	}{
+		{[]string{"fetch", "origin", fmt.Sprintf("pull/%d/head:%s", pr.Number, branch)}, "fetching PR branch"},
+		{[]string{"merge", "--squash", branch}, "squash merging"},
+		{[]string{"commit", "-m", pr.Title}, "creating commit"},
 	}
 
-	if err := performSquashMerge(branch, pr.Title); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func fetchPRBranch(prNumber int, branch string) error {
-	cmd := exec.Command("git", "fetch", "origin",
-		fmt.Sprintf("pull/%d/head:%s", prNumber, branch))
-
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("error fetching PR: %s\n%s", err, output)
+	for _, step := range steps {
+		if err := runGitCommand(step.args...); err != nil {
+			return fmt.Errorf("%s failed: %w", step.desc, err)
+		}
 	}
 	return nil
 }
 
-func performSquashMerge(branch, message string) error {
-	mergeCmd := exec.Command("git", "merge", "--squash", branch)
-	if output, err := mergeCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("squash merge fallido: %s\n%s", err, output)
+// updateMergeHistory persists merge records
+func updateMergeHistory(merges []MergeRecord) {
+	if err := updateRefHistory(merges); err != nil {
+		log.Fatal("Error updating history:", err)
 	}
-
-	commitCmd := exec.Command("git", "commit", "-m", message)
-	if output, err := commitCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("commit fallido: %s\n%s", err, output)
-	}
-	return nil
 }
 
+// updateRefHistory writes merge history to file
 func updateRefHistory(merges []MergeRecord) error {
 	history := RefHistory{Merges: merges}
 	data, err := json.MarshalIndent(history, "", "  ")
 	if err != nil {
-		return fmt.Errorf("error serializando historial: %w", err)
+		return fmt.Errorf("history serialization failed: %w", err)
 	}
 
 	if err := os.WriteFile(refHistoryFile, data, 0644); err != nil {
-		return fmt.Errorf("error escribiendo archivo: %w", err)
+		return fmt.Errorf("file write failed: %w", err)
 	}
 
-	if err := stageAndCommitHistory(); err != nil {
-		return fmt.Errorf("error confirmando cambios: %w", err)
+	if err := runGitCommand("add", refHistoryFile); err != nil {
+		return err
 	}
-	return nil
+	return runGitCommand("commit", "-m", "chore: update ref-history")
 }
 
-func stageAndCommitHistory() error {
-	addCmd := exec.Command("git", "add", refHistoryFile)
-	if output, err := addCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("error staging: %s\n%s", err, output)
-	}
-
-	commitCmd := exec.Command("git", "commit", "-m", "chore: update ref-history")
-	if output, err := commitCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("error commit: %s\n%s", err, output)
-	}
-	return nil
-}
-
+// pushChanges pushes to remote repository
 func pushChanges(cfg Config) error {
-	cmd := exec.Command("git", "push", "origin", cfg.TargetBranch, "--force")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("push fallido: %s\n%s", err, output)
-	}
-	return nil
+	return runGitCommand("push", "origin", cfg.TargetBranch, "--force")
 }
 
+// createMergeRecord generates merge metadata
 func createMergeRecord(pr GitHubPR) MergeRecord {
 	return MergeRecord{
 		PR:        pr.Number,
@@ -331,6 +344,7 @@ func createMergeRecord(pr GitHubPR) MergeRecord {
 	}
 }
 
+// getLatestCommitSHA retrieves current HEAD SHA
 func getLatestCommitSHA() string {
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	output, err := cmd.Output()
