@@ -43,10 +43,11 @@ type MergeRecord struct {
 
 // GitHubPR represents a simplified Pull Request structure
 type GitHubPR struct {
-	Number int    `json:"number"` // PR number
-	Title  string `json:"title"`  // PR title
-	State  string `json:"state"`  // PR state (open/closed)
-	Base   struct {
+	Number    int    `json:"number"`     // PR number
+	Title     string `json:"title"`      // PR title
+	State     string `json:"state"`      // PR state (open/closed)
+	CreatedAt string `json:"created_at"` // PR createAt
+	Base      struct {
 		Ref string `json:"ref"` // Base branch reference
 	} `json:"base"`
 	Labels []string `json:"labels"` // List of PR labels
@@ -143,7 +144,7 @@ func mustFetchQualifiedPRs(cfg Config) []GitHubPR {
 
 // fetchQualifiedPRs retrieves open PRs from GitHub API
 func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open&base=%s",
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls?state=open&base=%s&sort=created&direction=asc",
 		githubAPI, cfg.Owner, cfg.Repo, cfg.TrunkBranch)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -168,10 +169,11 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	}
 
 	var rawPRs []struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		State  string `json:"state"`
-		Base   struct {
+		Number    int    `json:"number"`
+		Title     string `json:"title"`
+		State     string `json:"state"`
+		CreatedAt string `json:"created_at"`
+		Base      struct {
 			Ref string `json:"ref"`
 		} `json:"base"`
 		Labels []struct {
@@ -192,11 +194,12 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 		}
 
 		prs[i] = GitHubPR{
-			Number: raw.Number,
-			Title:  raw.Title,
-			State:  raw.State,
-			Base:   raw.Base,
-			Labels: labels,
+			Number:    raw.Number,
+			Title:     raw.Title,
+			State:     raw.State,
+			CreatedAt: raw.CreatedAt,
+			Base:      raw.Base,
+			Labels:    labels,
 		}
 	}
 
