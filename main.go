@@ -56,6 +56,7 @@ type GitHubPR struct {
 
 func main() {
 	cfg := mustParseConfig()
+	log.Printf("cfg: %+v\n", cfg)
 	defer setOutput(cfg, "target_branch", cfg.TargetBranch)
 
 	mustSetupGitConfig()
@@ -65,7 +66,6 @@ func main() {
 	mergedPRs := processPRs(prs)
 	updateMergeHistory(mergedPRs)
 	pushChanges(cfg)
-
 }
 
 // mustParseConfig enforces valid configuration
