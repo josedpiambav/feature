@@ -374,21 +374,14 @@ func getLatestCommitSHA() string {
 }
 
 func setOutput(cfg Config, name, value string) error {
-	if info, err := os.Stat(cfg.GitHubOutput); err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("invalid output file path '%s'", cfg.GitHubOutput)
-	}
-
 	f, err := os.OpenFile(cfg.GitHubOutput, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-
 	if err != nil {
 		return fmt.Errorf("open output file failed: %w", err)
 	}
 	defer f.Close()
 
-	entry := fmt.Sprintf("%s=%s\n", name, value)
-	if _, err := f.WriteString(entry); err != nil {
+	if _, err := fmt.Fprintf(f, "%s=%s\n", name, value); err != nil {
 		return fmt.Errorf("write output failed: %w", err)
 	}
-
 	return nil
 }
