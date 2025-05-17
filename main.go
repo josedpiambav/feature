@@ -27,6 +27,7 @@ type Config struct {
 	TrunkBranch    string   `json:"trunk_branch"`    // Base branch (usually main/master)
 	TargetBranch   string   `json:"target_branch"`   // Target branch for merges
 	RequiredLabels []string `json:"required_labels"` // Required PR labels
+	GitHubOutput   string   `json:"github_output"`   // GitHub output path
 }
 
 // RefHistory tracks merged pull requests
@@ -55,14 +56,16 @@ type GitHubPR struct {
 
 func main() {
 	cfg := mustParseConfig()
-	mustSetupGitConfig()
+	defer setOutput(cfg, "target_branch", cfg.TargetBranch)
 
+	mustSetupGitConfig()
 	prs := mustFetchQualifiedPRs(cfg)
 	prepareTargetBranch(cfg)
 
 	mergedPRs := processPRs(prs)
 	updateMergeHistory(mergedPRs)
 	pushChanges(cfg)
+
 }
 
 // mustParseConfig enforces valid configuration
@@ -85,11 +88,24 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&cfg.TrunkBranch, "trunk_branch", "main", "Base branch name")
 	flag.StringVar(&cfg.TargetBranch, "target_branch", "", "Target branch name")
 	flag.StringVar(&labels, "labels", "", "Required PR labels (comma separated)")
+	flag.StringVar(&cfg.GitHubOutput, "github_output", "", "GitHub outputs file path")
 	flag.Parse()
 
 	// Validate required parameters
-	if cfg.GithubToken == "" || cfg.Owner == "" || cfg.Repo == "" {
-		return cfg, fmt.Errorf("missing required parameters")
+	if cfg.GithubToken == "" {
+		return cfg, fmt.Errorf("missing required parameter: 'github_token'")
+	}
+
+	if cfg.Owner == "" {
+		return cfg, fmt.Errorf("missing required parameter: 'owner'")
+	}
+
+	if cfg.Repo == "" {
+		return cfg, fmt.Errorf("missing required parameter: 'repo'")
+	}
+
+	if cfg.GitHubOutput == "" {
+		return cfg, fmt.Errorf("missing required parameter: 'github_output'")
 	}
 
 	// Set default target branch if not provided
@@ -355,4 +371,24 @@ func getLatestCommitSHA() string {
 		return "unknown"
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func setOutput(cfg Config, name, value string) error {
+	if info, err := os.Stat(cfg.GitHubOutput); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("invalid output file path '%s'", cfg.GitHubOutput)
+	}
+
+	f, err := os.OpenFile(cfg.GitHubOutput, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+
+	if err != nil {
+		return fmt.Errorf("open output file failed: %w", err)
+	}
+	defer f.Close()
+
+	entry := fmt.Sprintf("%s=%s\n", name, value)
+	if _, err := f.WriteString(entry); err != nil {
+		return fmt.Errorf("write output failed: %w", err)
+	}
+
+	return nil
 }
