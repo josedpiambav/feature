@@ -56,7 +56,6 @@ type GitHubPR struct {
 
 func main() {
 	cfg := mustParseConfig()
-	log.Printf("cfg: %+v\n", cfg)
 	defer setOutput(cfg, "target_branch", cfg.TargetBranch)
 
 	mustSetupGitConfig()
@@ -72,7 +71,7 @@ func main() {
 func mustParseConfig() Config {
 	cfg, err := parseConfig()
 	if err != nil {
-		log.Fatal("Invalid configuration:", err)
+		log.Fatal("invalid configuration:", err)
 	}
 	return cfg
 }
@@ -82,9 +81,9 @@ func parseConfig() (Config, error) {
 	var cfg Config
 	var labels string
 
-	flag.StringVar(&cfg.GithubToken, "github_token", "", "GitHub access token (required)")
-	flag.StringVar(&cfg.Owner, "owner", "", "Repository owner (required)")
-	flag.StringVar(&cfg.Repo, "repo", "", "Repository name (required)")
+	flag.StringVar(&cfg.GithubToken, "github_token", "", "GitHub access token")
+	flag.StringVar(&cfg.Owner, "owner", "", "Repository owner")
+	flag.StringVar(&cfg.Repo, "repo", "", "Repository name")
 	flag.StringVar(&cfg.TrunkBranch, "trunk_branch", "main", "Base branch name")
 	flag.StringVar(&cfg.TargetBranch, "target_branch", "", "Target branch name")
 	flag.StringVar(&labels, "labels", "", "Required PR labels (comma separated)")
@@ -128,7 +127,7 @@ func parseLabels(input string) []string {
 // mustSetupGitConfig configures Git with safe defaults
 func mustSetupGitConfig() {
 	if err := setupGitConfig(); err != nil {
-		log.Fatal("Error configuring Git:", err)
+		log.Fatal("error configuring Git:", err)
 	}
 }
 
@@ -153,7 +152,7 @@ func setupGitConfig() error {
 func mustFetchQualifiedPRs(cfg Config) []GitHubPR {
 	prs, err := fetchQualifiedPRs(cfg)
 	if err != nil {
-		log.Fatal("Error fetching PRs:", err)
+		log.Fatal("error fetching PRs:", err)
 	}
 	return prs
 }
@@ -176,12 +175,12 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
+		return nil, fmt.Errorf("request API failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API responded with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("response API status %d", resp.StatusCode)
 	}
 
 	var rawPRs []struct {
@@ -198,7 +197,7 @@ func fetchQualifiedPRs(cfg Config) ([]GitHubPR, error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&rawPRs); err != nil {
-		return nil, fmt.Errorf("response decoding failed: %w", err)
+		return nil, fmt.Errorf("response API decoding failed: %w", err)
 	}
 
 	// Convert raw PRs to simplified structure
@@ -254,23 +253,18 @@ func hasAnyLabel(prLabels []string, required []string) bool {
 
 // prepareTargetBranch resets target branch
 func prepareTargetBranch(cfg Config) {
-	steps := []struct {
-		args []string
-		desc string
-	}{
-		{[]string{"checkout", cfg.TrunkBranch}, "switching to trunk branch"},
-		{[]string{"branch", "-D", cfg.TargetBranch}, "deleting target branch"},
-		{[]string{"checkout", "-B", cfg.TargetBranch}, "creating target branch"},
+	if branchExists(cfg.TargetBranch) {
+		if err := runGitCommand("checkout", cfg.TrunkBranch); err != nil {
+			log.Fatalf("checkout to trunk branch failed: %v", err)
+		}
 	}
 
-	for _, step := range steps {
-		// Skip deletion if branch doesn't exist
-		if step.args[0] == "branch" && !branchExists(cfg.TargetBranch) {
-			continue
-		}
-		if err := runGitCommand(step.args...); err != nil {
-			log.Fatalf("Error %s: %v", step.desc, err)
-		}
+	if err := runGitCommand("branch", "-D", cfg.TargetBranch); err != nil {
+		log.Fatalf("delete target branch failed: %v", err)
+	}
+
+	if err := runGitCommand("checkout", "-B", cfg.TargetBranch); err != nil {
+		log.Fatalf("create target branch failed: %v", err)
 	}
 }
 
@@ -307,27 +301,25 @@ func processSinglePR(pr GitHubPR) error {
 	branch := fmt.Sprintf("pr-%d", pr.Number)
 
 	// Execute PR processing steps
-	steps := []struct {
-		args []string
-		desc string
-	}{
-		{[]string{"fetch", "origin", fmt.Sprintf("pull/%d/head:%s", pr.Number, branch)}, "fetching PR branch"},
-		{[]string{"merge", "--squash", branch}, "squash merging"},
-		{[]string{"commit", "-m", pr.Title}, "creating commit"},
+	if err := runGitCommand("fetch", "origin", fmt.Sprintf("pull/%d/head:%s", pr.Number, branch)); err != nil {
+		return fmt.Errorf("fetch PR branch '%s' failed: %w", branch, err)
 	}
 
-	for _, step := range steps {
-		if err := runGitCommand(step.args...); err != nil {
-			return fmt.Errorf("%s failed: %w", step.desc, err)
-		}
+	if err := runGitCommand("merge", "--squash", branch); err != nil {
+		return fmt.Errorf("squash merge failed: %w", err)
 	}
+
+	if err := runGitCommand("commit", "-m", pr.Title); err != nil {
+		return fmt.Errorf("create commit failed: %w", err)
+	}
+
 	return nil
 }
 
 // updateMergeHistory persists merge records
 func updateMergeHistory(merges []MergeRecord) {
 	if err := updateRefHistory(merges); err != nil {
-		log.Fatal("Error updating history:", err)
+		log.Fatal("error updating history:", err)
 	}
 }
 
@@ -373,6 +365,7 @@ func getLatestCommitSHA() string {
 	return strings.TrimSpace(string(output))
 }
 
+// setOutput assigns a return value
 func setOutput(cfg Config, name, value string) error {
 	f, err := os.OpenFile(cfg.GitHubOutput, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
