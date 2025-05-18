@@ -253,14 +253,14 @@ func hasAnyLabel(prLabels []string, required []string) bool {
 
 // prepareTargetBranch resets target branch
 func prepareTargetBranch(cfg Config) {
-	if !branchExists(cfg.TargetBranch) {
-		if err := runGitCommand("checkout", cfg.TrunkBranch); err != nil {
-			log.Fatalf("checkout to trunk branch failed: %v", err)
-		}
+	if err := runGitCommand("checkout", cfg.TrunkBranch); err != nil {
+		log.Fatalf("checkout to trunk branch failed: %v", err)
 	}
 
-	if err := runGitCommand("branch", "-D", cfg.TargetBranch); err != nil {
-		log.Fatalf("delete target branch failed: %v", err)
+	if branchExists(cfg.TargetBranch) {
+		if err := runGitCommand("branch", "-D", cfg.TargetBranch); err != nil {
+			log.Fatalf("delete target branch failed: %v", err)
+		}
 	}
 
 	if err := runGitCommand("checkout", "-B", cfg.TargetBranch); err != nil {
