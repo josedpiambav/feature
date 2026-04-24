@@ -45,15 +45,13 @@ type MergeRecord struct {
 
 // ConflictError represents a squash merge failure caused by file conflicts
 type ConflictError struct {
-	Files []string // conflicting file paths
-	Err   error
+	Files     []string // conflicting file paths
+	GitOutput string   // raw output from git merge --squash, shown directly to the user
 }
 
 func (e *ConflictError) Error() string {
-	return fmt.Sprintf("merge conflict in [%s]: %v", strings.Join(e.Files, ", "), e.Err)
+	return fmt.Sprintf("merge conflict in %d file(s)", len(e.Files))
 }
-
-func (e *ConflictError) Unwrap() error { return e.Err }
 
 // ErrEmptyMerge signals that a PR produced no new changes after squash merge.
 // This means the PR's changes are already present in the target branch.
@@ -427,14 +425,16 @@ func processPRs(prs []GitHubPR, targetBranch string) ([]MergeRecord, error) {
 			}
 			var conflictErr *ConflictError
 			if errors.As(err, &conflictErr) {
-				fmt.Printf("CONFLICT\n         Conflicting files: %s\n", strings.Join(conflictErr.Files, ", "))
+				fmt.Println("CONFLICT")
+				fmt.Print(strings.TrimRight(conflictErr.GitOutput, "\n"))
+				fmt.Println()
 			} else {
 				fmt.Printf("FAILED\n         Reason: %s\n", firstLine(err.Error()))
 			}
 			fmt.Printf("\nMerge aborted: PR #%d could not be merged into '%s'.\n", pr.Number, targetBranch)
 			fmt.Printf("Target branch '%s' was not updated.\n", targetBranch)
 			runGitCommand("reset", "--hard", "HEAD")
-			return nil, fmt.Errorf("PR #%d blocked merge: %w", pr.Number, err)
+			return nil, fmt.Errorf("PR #%d could not be merged: %w", pr.Number, err)
 		}
 		fmt.Println("OK")
 		mergedPRs = append(mergedPRs, createMergeRecord(pr))
@@ -462,11 +462,14 @@ func processSinglePR(pr GitHubPR) error {
 		return fmt.Errorf("fetch PR branch '%s' failed: %w", branch, err)
 	}
 
-	if err := runGitCommand("merge", "--squash", branch); err != nil {
+	// Capture merge output separately so it can be shown to the user as-is
+	// without being embedded in the error chain.
+	mergeOutput, mergeErr := exec.Command("git", "merge", "--squash", branch).CombinedOutput()
+	if mergeErr != nil {
 		if files := getConflictingFiles(); len(files) > 0 {
-			return &ConflictError{Files: files, Err: fmt.Errorf("squash merge failed: %w", err)}
+			return &ConflictError{Files: files, GitOutput: string(mergeOutput)}
 		}
-		return fmt.Errorf("squash merge failed: %w", err)
+		return fmt.Errorf("squash merge failed: %s", firstLine(string(mergeOutput)))
 	}
 
 	if err := runGitCommand("commit", "-m", pr.Title); err != nil {
