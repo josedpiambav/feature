@@ -55,6 +55,10 @@ func (e *ConflictError) Error() string {
 
 func (e *ConflictError) Unwrap() error { return e.Err }
 
+// ErrEmptyMerge signals that a PR produced no new changes after squash merge.
+// This means the PR's changes are already present in the target branch.
+var ErrEmptyMerge = errors.New("PR changes are already included in the target branch")
+
 // GitHubPR represents a simplified Pull Request structure
 type GitHubPR struct {
 	Number    int    `json:"number"`     // PR number
@@ -367,21 +371,40 @@ func runGitCommand(args ...string) error {
 }
 
 // getConflictingFiles returns files with unresolved merge conflicts in the index.
-// Works correctly for all conflict types (content, modify/delete, add/add, rename/rename)
-// by querying git directly instead of parsing free-form output text.
+// Uses git ls-files --unmerged which directly queries the index for stages 1/2/3,
+// working correctly across all git versions and squash merge scenarios.
 func getConflictingFiles() []string {
-	cmd := exec.Command("git", "diff", "--name-only", "--diff-filter=U")
-	output, err := cmd.Output()
+	// Format per line: "<mode> <sha> <stage>\t<filename>"
+	// Conflicted files appear 3 times (stages 1, 2, 3) — deduplicate by filename.
+	output, err := exec.Command("git", "ls-files", "--unmerged").Output()
 	if err != nil || len(output) == 0 {
 		return nil
 	}
+	seen := make(map[string]struct{})
 	var files []string
 	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if line != "" {
-			files = append(files, line)
+		if idx := strings.Index(line, "\t"); idx >= 0 {
+			f := strings.TrimSpace(line[idx+1:])
+			if f != "" {
+				if _, exists := seen[f]; !exists {
+					seen[f] = struct{}{}
+					files = append(files, f)
+				}
+			}
 		}
 	}
 	return files
+}
+
+// firstLine returns the first non-empty line of a string,
+// avoiding multi-line raw git output in user-facing messages.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return s
 }
 
 // processPRs handles the PR merging pipeline with progress output.
@@ -397,11 +420,16 @@ func processPRs(prs []GitHubPR, targetBranch string) ([]MergeRecord, error) {
 	for i, pr := range prs {
 		fmt.Printf("  [%d/%d] #%d \"%s\" ... ", i+1, total, pr.Number, pr.Title)
 		if err := processSinglePR(pr); err != nil {
+			if errors.Is(err, ErrEmptyMerge) {
+				fmt.Println("SKIPPED (changes already in target branch)")
+				runGitCommand("reset", "--hard", "HEAD")
+				continue
+			}
 			var conflictErr *ConflictError
 			if errors.As(err, &conflictErr) {
 				fmt.Printf("CONFLICT\n         Conflicting files: %s\n", strings.Join(conflictErr.Files, ", "))
 			} else {
-				fmt.Printf("FAILED\n         Reason: %v\n", err)
+				fmt.Printf("FAILED\n         Reason: %s\n", firstLine(err.Error()))
 			}
 			fmt.Printf("\nMerge aborted: PR #%d could not be merged into '%s'.\n", pr.Number, targetBranch)
 			fmt.Printf("Target branch '%s' was not updated.\n", targetBranch)
@@ -442,6 +470,9 @@ func processSinglePR(pr GitHubPR) error {
 	}
 
 	if err := runGitCommand("commit", "-m", pr.Title); err != nil {
+		if strings.Contains(err.Error(), "nothing to commit") {
+			return ErrEmptyMerge
+		}
 		return fmt.Errorf("create commit failed: %w", err)
 	}
 
